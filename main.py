@@ -1,5 +1,5 @@
 import argparse
-import image_loader
+import loader
 
 def main():
     parser = argparse.ArgumentParser()
@@ -7,7 +7,7 @@ def main():
     parser.add_argument("out_folder", help="Path where result will be stored")
     args = parser.parse_args()
 
-    data, exif = image_loader.load_batch(args.img_src_folder)
+    data, exif = loader.load_batch(args.img_src_folder)
     print (exif)
 
 if __name__ == "__main__":

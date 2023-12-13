@@ -6,5 +6,6 @@ Test images taken from this website: http://www.photofit4panorama.com/gallery.ht
 
 Dependencies:
 - Python >= 3.9
-- pip instal opencv-python
-- pip instal exifread
+- pip install opencv-python
+- pip install exifread
+- pip install numpy  
