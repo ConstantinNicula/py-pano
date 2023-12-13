@@ -1,24 +1,60 @@
 import cv2 
+import time
 import numpy as np
+import itertools
 
 class Matcher: 
-    def __init__(self, kpts_per_img:int = 100): 
-
+    def __init__(self, kpts_per_img:int = 2000): 
         # Params described https://docs.opencv.org/3.4/db/d95/classcv_1_1ORB.html
         self.kp_detector = cv2.ORB.create(nfeatures=kpts_per_img, scaleFactor=1.4)
+        self.kp_matcher = cv2.BFMatcher.create(normType=cv2.NORM_HAMMING)
 
-        # FLAN matcher params described in: 
-        # Using values from:
-        # https://docs.opencv.org/3.0-beta/doc/py_tutorials/py_feature2d/py_matcher/py_matcher.html
-        FLANN_INDEX_LSH = 6
-        index_params = dict(algorithm = FLANN_INDEX_LSH, 
-                            table_number = 6, # 12 
-                            key_size = 12, #20 
-                            multi_probe_level = 1) #2
-        search_params = dict(checks=50)
-        self.kp_matcher = cv2.FlannBasedMatcher(index_params, search_params)
+        # Contains concatenated data
+        self.all_descriptors = None
+        self.all_keypoints = None 
+        self.all_matches = None
 
-    def __extract_keypoints(self, img: np.ndarray): 
+    """
+        Find overlaps between input images and returns a set of matching points.
+        Note: 
+            A given ray direction can occur in multiple images, a set of matching points would than be: 
+                p_i(img_n) -> (p_j(img_m), p_k(img_o)...)
+            These matches have to be unique  
+    """
+    def match(self, imgs: list[np.ndarray], k:int = 4): 
+        # preprocess all images
+        self.all_descriptors = []
+        self.all_keypoints = []
+        for img in imgs: 
+            kpts, desc = self.__get_keypoints(img)
+            self.all_descriptors.append(desc)
+            self.all_keypoints.append(kpts)
+
+        # loop through images and find best matches 
+        self.all_matches = []
+        for i, target_desc in enumerate(self.all_descriptors): 
+            ref_descriptors = self.all_descriptors[:]
+            ref_descriptors.pop(i)
+
+            self.kp_matcher.clear()
+            self.kp_matcher.add(ref_descriptors)
+            matches = self.kp_matcher.knnMatch(target_desc, k=4)
+
+            # flatten all matches
+            matches = tuple(itertools.chain.from_iterable(matches))
+            self.all_matches.append(matches)
+
+            # loop through all matches and retain those for m candidate images
+            matched_images = [m.imgIdx for m in matches]
+            matches_per_image =  {i:matched_images.count(i) for i in range(len(imgs))}
+            
+            # retain top m images 
+
+            # geometric validation using RANSAC 
+
+            print(matches_per_image) 
+
+    def __get_keypoints(self, img: np.ndarray): 
         # convert image to gray scale
         img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
@@ -26,11 +62,15 @@ class Matcher:
         kpts, desc = self.kp_detector.detectAndCompute(img_gray, None)  
         return kpts, desc 
 
-    def __find_kp_matches(self, img1: np.ndarray, img2: np.ndarray):
-        kpts1, desc1 = self.__extract_keypoints(img1)
-        kpts2, desc2 = self.__extract_keypoints(img2)
 
-        matches = self.kp_matcher.knnMatch(desc1, desc2, k=2)
+    def __find_kp_matches(self, img1: np.ndarray, img2: np.ndarray):
+        kpts1, desc1 = self.__get_keypoints(img1)
+        kpts2, desc2 = self.__get_keypoints(img2)
+
+        self.kp_matcher = cv2.BFMatcher.create(normType=cv2.NORM_HAMMING)
+        self.kp_matcher.add([desc2])
+        matches = self.kp_matcher.knnMatch(desc1, k=2)
+        print(">>>>", matches[0][0].imgIdx)
         good_matches = []
         for m in matches:
             if len(m) == 2 and m[0].distance < 0.7 * m[1].distance:
@@ -45,9 +85,10 @@ class Matcher:
 
     def test_extract(self, img, scale = 0.5):
         img = self.__utils_resize(img, scale) 
-        kpts, desc = self.__extract_keypoints(img)
+        kpts, desc = self.__get_keypoints(img)
         print(f"Detected {len(kpts)} keypoints")
-        
+        print(len(desc[0]), kpts[0]) 
+        return
         # show result
         img_disp = img.copy()
         cv2.drawKeypoints(img, kpts, img_disp)
@@ -63,12 +104,14 @@ class Matcher:
         img_out = cv2.drawMatchesKnn(img1, kpts1, img2, kpts2, match, None)
         cv2.imshow("matches", img_out)
         cv2.waitKey(0)
-        print(match)
 
 
 import loader
 if __name__ == "__main__":
     imgs, exif = loader.load_batch("./input_imgs/apron")
     matcher = Matcher()
-    # matcher.test_extract(imgs[0])
-    res = matcher.test_match(imgs[0], imgs[2])
+    t1 = time.time()
+    matcher.match(imgs)
+    print(f"Delta time {time.time() - t1}")
+    #matcher.test_extract(imgs[0])
+    #res = matcher.test_match(imgs[0], imgs[2])
