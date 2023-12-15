@@ -17,7 +17,9 @@ def load_batch(img_src_folder: str, load_exif = True) -> tuple[list[np.ndarray],
 
     batch_data = []
     batch_exif = []
-    for img_name in os.listdir(img_src_folder):
+    in_current_folder = os.listdir(img_src_folder)
+    in_current_folder.sort()
+    for img_name in in_current_folder:
         img_path = os.path.join(img_src_folder, img_name)
         if os.path.isfile(img_path) and img_path.lower().endswith(valid_img_extensions):
             batch_data.append(cv2.imread(img_path, cv2.IMREAD_COLOR))
