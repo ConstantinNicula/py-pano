@@ -2,6 +2,7 @@ import cv2
 import time
 import numpy as np
 from utils import * 
+from homography import *
 
 class Matcher: 
     def __init__(self, kpts_per_img:int = 2000): 
@@ -24,7 +25,7 @@ class Matcher:
         # Pairs (i, j) of overlapping images
         self.img_connectivity = []
 
-    def get_overlapping_images(self):
+    def get_overlapping_pairs(self):
         """
             Returns a list of tuples containing valid image overlaps
         """ 
@@ -54,35 +55,36 @@ class Matcher:
         """
         # preprocess all images
         for img in imgs: 
-            keypoints, descriptors = self.__get_keypoints(img)
+            keypoints, descriptors = self.__extract_keypoints(img)
             self.img_descriptors.append(descriptors)
             self.img_keypoints.append(keypoints)
 
         # Quadratic matching between all images. 
-        # An approximate solution can be obtained in n*log(n) but it's more difficult to implements 
+        # An approximate solution can be obtained in n*log(n) but it's more difficult to implement
         for i in range(len(imgs) - 1):
             for j in range(i + 1, len(imgs)):
                 kp_raw_matches = self.__match_keypoints(self.img_descriptors[i], self.img_descriptors[j])
 
                 # filter using geometric check
-                valid, H, inliner_kp_matches = self.__is_valid_overlap(self.img_keypoints[i], self.img_keypoints[j], kp_raw_matches)
-                if valid:
+                overlap_data = self.__is_valid_overlap(self.img_keypoints[i], self.img_keypoints[j], kp_raw_matches)
+                if overlap_data:
                     if DEBUG_ENABLED(): print(f"Found valid match {i} -> {j}") 
-                    self.img_overlap_data[(i, j)] = (H, inliner_kp_matches)
+                    self.img_overlap_data[(i, j)] = overlap_data 
         
         self.img_connectivity = self.img_overlap_data.keys()
 
-    def __get_keypoints(self, img: np.ndarray) -> tuple[np.ndarray, np.ndarray]: 
+    def __extract_keypoints(self, img: np.ndarray) -> tuple[np.ndarray, np.ndarray]: 
         """
             Extracts ORB keypoints and descriptors
             Returns tuple of two ndarrays:
-                - kps.shape = (n, 2)
+                - kps.shape = (n, 3) - homogenous coordinates
                 - descriptor.shape = (n, 32) 
         """
         # convert image to gray scale
         img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         cv_kpts, desc = self.kp_detector.detectAndCompute(img_gray, None) 
-        return np.array([kp.pt for kp in cv_kpts]), desc 
+        kpts = convert_to_homogenous(np.array([kp.pt for kp in cv_kpts]))
+        return kpts, desc 
 
     def __match_keypoints(self, desc1: np.ndarray, desc2: np.ndarray) -> np.ndarray:
         """
@@ -105,95 +107,16 @@ class Matcher:
         """
             Determine if there is a valid homography between kpts1 and kpts2, based on provided matches 
             Returns a tuple containing (valid_overlap, est_homography, kpts_inliers)
-                - valid_overlap - bool indicating if there is a valid homography between the provided points
                 - est_homography - calculated homography matrix 
-                - kpts_inliers - filtered keypoints 
+                - matches - corresponding to inliers 
         """
         if len(matches) < 4:
-            return False, None, None
+            return None 
 
-        H, inliner_mask = self.__estimate_homography_ransac(kpts1, kpts2, matches) 
+        H, inliner_mask = estimate_homography_ransac(kpts1, kpts2, matches) 
         nf, ni = len(matches), len(inliner_mask)
-        if DEBUG_ENABLED(): print(f"total matches {nf}, valid matches {ni}")
         valid = ni > alpha + beta * nf
-        return valid, H, matches[inliner_mask]
+        if DEBUG_ENABLED(): 
+            print(f"total matches {nf}, valid matches {ni}")
+        return (H, matches[inliner_mask]) if valid else None
 
-    def __estimate_homography_ransac(self, kpts1: np.ndarray, kpts2: np.ndarray, matches: np.ndarray, reproj_err=5, max_iters=500) -> tuple[np.ndarray, np.ndarray]:
-        # Implementation based on: 
-        # https://engineering.purdue.edu/kak/courses-i-teach/ECE661.08/solution/hw4_s1.pdf
-
-        H = None
-        inlier_mask = None
-        max_num_inliers = 0
-        err_std = np.Inf
-
-        # reorder points according to matches 
-        kpts1_h = self.__to_homogenous(kpts1[matches[:, 0]])
-        kpts2_h = self.__to_homogenous(kpts2[matches[:, 1]]) 
-         
-        i, N = 0, max_iters 
-        while i < N:
-            # extract 4 potential inliers at random
-            sel_pairs = np.random.choice(len(matches), 4, replace=False)
-            sel_kpts1 = kpts1_h[sel_pairs]
-            sel_kpts2 = kpts2_h[sel_pairs]
-
-            # estimate homography from 4 pairs 
-            Hi = self.__estimate_homography(sel_kpts1, sel_kpts2) 
-
-            # calculate the number of inliers
-            cur_num_inliers, curr_std, curr_inlier_mask = self.__find_inliers(Hi, kpts1_h, kpts2_h, reproj_err) 
-            
-            # update model if necessary
-            if cur_num_inliers > max_num_inliers or (cur_num_inliers == max_num_inliers and curr_std < err_std):
-                # store best model
-                H = Hi
-                max_num_inliers, err_std, inlier_mask = cur_num_inliers, curr_std, curr_inlier_mask
-            
-            # update N            
-            e = 1 - cur_num_inliers / len(matches) + 1e-9
-            N = min(max_iters, int(np.log(1 - 0.99)/ np.log(1 - (1 - e)**4)))
-
-            i += 1
-        return H, inlier_mask
-
-    def __to_homogenous(self, kpts: np.ndarray): 
-        ones_col = np.ones((len(kpts), 1))
-        return np.hstack((kpts, ones_col))
-
-    def __estimate_homography(self, kpts1: np.ndarray, kpts2: np.ndarray) -> np.ndarray:
-        assert len(kpts1) == len(kpts2) and len(kpts1) == 4
-
-        A = np.zeros((8, 9))
-        for i in range(4):
-            pta, ptb = kpts1[i], kpts2[i]
-            
-            # xi, yi, 1, 0, 0, 0, -xi' * xi, -xi' * yi, -xi' 
-            A[2*i, 0:3] = pta 
-            A[2*i, 6:9] = -ptb[0] * pta 
-
-            # 0, 0, 0, xi, yi, 1, -yi' * xi, -yi' *yi, -yi' 
-            A[2*i+1, 3:6] = pta 
-            A[2*i+1, 6:9] = -ptb[1] * pta 
-
-        # Use SVD to find null space 
-        AtA = A.T @ A 
-        U, S, V = np.linalg.svd(AtA)
-
-        # Extract solution from last column (normalized)
-        return np.reshape(V[-1, :], (3, 3)) / V[-1,-1] 
-    
-    def __find_inliers(self, H: np.ndarray, kpts1: np.ndarray, kpts2: np.ndarray, reproj_err: float) -> tuple[int, float, np.ndarray]: 
-        # compute transformed points
-        pt_est = (H @ kpts1.T).T
-        pt_est = (pt_est.T / pt_est[:, 2]).T
-
-        # compute estimation error
-        err = kpts2 - pt_est
-        norm_err = np.linalg.norm(err, axis=1)
-
-        # extract inliers and the corresponding errors
-        inlier_mask = np.flatnonzero(norm_err < reproj_err)
-        errors = norm_err[inlier_mask]
-
-        return len(inlier_mask), np.std(errors), inlier_mask

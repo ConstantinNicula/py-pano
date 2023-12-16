@@ -13,6 +13,6 @@ def main():
     matcher = Matcher()
     t1 = time.time()
     matcher.match(imgs)
-
+    print(f"Elapsed type {time.time() - t1}s")
 if __name__ == "__main__":
     main()
