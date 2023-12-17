@@ -1,22 +1,18 @@
 import numpy as np
 
-def estimate_homography_ransac(kpts1: np.ndarray, kpts2: np.ndarray, matches: np.ndarray, reproj_err=5, max_iters=500) -> tuple[np.ndarray, np.ndarray]:
+def estimate_homography_ransac(kpts1: np.ndarray, kpts2: np.ndarray, reproj_err=5, max_iters=500) -> tuple[np.ndarray, np.ndarray]:
     # Implementation based on: 
     # https://engineering.purdue.edu/kak/courses-i-teach/ECE661.08/solution/hw4_s1.pdf
-
-    H = None
-    inlier_mask = None
+    H, inlier_mask = None, None
+    
+    num_keypoints = len(kpts1)
     max_num_inliers = 0
     err_std = np.Inf
 
-    # reorder points according to matches 
-    kpts1 = kpts1[matches[:, 0]]
-    kpts2 = kpts2[matches[:, 1]]
-        
     i, N = 0, max_iters 
     while i < N:
         # extract 4 potential inliers at random
-        sel_pairs = np.random.choice(len(matches), 4, replace=False)
+        sel_pairs = np.random.choice(num_keypoints, 4, replace=False)
         sel_kpts1 = kpts1[sel_pairs]
         sel_kpts2 = kpts2[sel_pairs]
 
@@ -33,7 +29,7 @@ def estimate_homography_ransac(kpts1: np.ndarray, kpts2: np.ndarray, matches: np
             max_num_inliers, err_std, inlier_mask = cur_num_inliers, curr_std, curr_inlier_mask
         
         # update N            
-        e = 1 - cur_num_inliers / len(matches) + 1e-9
+        e = 1 - cur_num_inliers / num_keypoints + 1e-9
         N = min(max_iters, int(np.log(1 - 0.99)/ np.log(1 - (1 - e)**4)))
 
         i += 1
