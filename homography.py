@@ -73,5 +73,4 @@ def find_inliers(H: np.ndarray, kpts1: np.ndarray, kpts2: np.ndarray, reproj_err
     # extract inliers and the corresponding errors
     inlier_mask = np.flatnonzero(norm_err < reproj_err)
     errors = norm_err[inlier_mask]
-
     return len(inlier_mask), np.std(errors), inlier_mask

@@ -29,7 +29,7 @@ class Matcher:
 
         # Quadratic matching between all images. 
         # An approximate solution can be obtained in n*log(n) but it's more difficult to implement
-        img_overlap_data = {}
+        img_overlap_data = [] 
         for i in range(len(imgs) - 1):
             for j in range(i + 1, len(imgs)):
                 # get ordered pairs of matching keypoints
@@ -39,7 +39,7 @@ class Matcher:
                 overlap_data = self.__check_valid_homography(m_kpts_i, m_kpts_j, self.repoj_err)
                 if overlap_data:
                     if DEBUG_ENABLED(): print(f"Found valid match {i} -> {j}") 
-                    img_overlap_data[(i, j)] = overlap_data 
+                    img_overlap_data.append((i, j, *overlap_data)) 
         return img_overlap_data
     
     def __extract_keypoints(self, img: np.ndarray) -> tuple[np.ndarray, np.ndarray]: 
