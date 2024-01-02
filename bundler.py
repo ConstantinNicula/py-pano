@@ -1,170 +1,292 @@
 import numpy as np
+from collections import deque
 from scipy.optimize import least_squares
+from dataclasses import dataclass
+from matcher import MatchData
+
+import so3
+from homography import *
+
+@dataclass
+class OverlapData:
+    """
+        Class for keeping track of overlap information between two images:
+            - src_kpts: keypoints in source img (origin at image center)
+            - dst_kpts: keypoints in destination img (origin at image center)
+            - H: homography from source to destination 
+    """
+    src_kpts: np.ndarray
+    dst_kpts: np.ndarray
+    H: np.ndarray
+
+class CameraPose: 
+    """
+        Class for keeping track of camera params: 
+            - Source image
+            - Intrinsic: camera focal length estimate 
+            - Extrinsic: Camera rotation estimate 
+    """
+    def __init__(self, f: float=1.0, rot: np.ndarray = np.zeros(3)):
+        # camera intrinsics parameters
+        self.f = f
+        # camera extrinsic parameters
+        self.rot = rot 
+
+    def get_cam_mat(self):
+        return self.get_k_mat() @ so3.exp(self.rot) 
+
+    def get_inv_cam_mat(self): 
+       return so3.exp(self.rot).T @ self.get_inv_k_mat() 
+
+    def get_k_mat(self): 
+        return np.array([[self.f, 0, 0], 
+                        [0, self.f, 0], 
+                        [0, 0, 1]])
+
+    def get_inv_k_mat(self):
+        return np.array([[1/self.f, 0, 0], 
+                         [0, 1/self.f, 0], 
+                         [0, 0, 1]])
+    
+    def __repr__(self):
+        return f"f: {self.f} rot: {self.rot}"
+
+    @classmethod
+    def rot_from_homography(pose1, pose2, H21: np.ndarray) -> np.ndarray:
+        # find best pose2.rot that best explains H21 (homography from 1 to 2)
+        # H21 = K2 * R2 * R1^-1 * K1^-1 
+        # R2 * R1^-1 = K2^-1 * H21 * K1
+        # R2 = K2^-1 * H21 * K1 * R1  = K2^-1 * H21 * CM1
+        R21 = pose2.get_inv_k_mat() @ H21 @ pose1.get_cam_mat()
+        return so3.log(R21)
 
 class Bundler: 
-    def __init__(self):
-        self.used_img_cnt = 0 
-        self.img_data = {}
-        self.img_overlap_data = []
+    def __init__(self, imgs: list[np.ndarray]|None = None, img_matches: list[MatchData]|None = None):
+        # storage for images
+        self.imgs = [] 
         
-    def add_image(self, img_id:int, img: np.ndarray):
-        # no need to store the actual image, store internal id and image shape
-        self.img_data[img_id] = [-1, img.shape]
+        # camera poses are graph nodes
+        self.pose_graph_nodes = []
 
-    def add_overlapping_points(self, img_id1: int, img_id2: int, kpts1: np.ndarray, kpts2: np.ndarray):
-        assert len(kpts1) == len(kpts2)
+        # map of which represents pose graph data 
+        self.pose_graph_edges: dict[int, list[tuple[int, OverlapData]]]= {} 
 
-        # flag images as used
-        if self.img_data[img_id1][0] == -1:
-            self.img_data[img_id1][0] = self.__get_next_id()
+        # store provided data
+        if imgs: self.set_images(imgs)
+        if img_matches: self.set_match_data(img_matches)
+        
+        # ids nodes which are currently being processed
+        self.active_graph_nodes = []
 
-        if self.img_data[img_id2][0] == -1:
-            self.img_data[img_id2][0] = self.__get_next_id()
+    def set_images(self, imgs: list[np.ndarray]):
+        assert imgs is not None
+        self.imgs = imgs
+        self.pose_graph_nodes = [CameraPose() for _ in imgs]
+        for img_id in range(len(imgs)):
+            self.pose_graph_edges[img_id] = []
 
-        # convert to internal ids 
-        self.img_overlap_data.append((img_id1, img_id2, kpts1, kpts2))
+    def set_match_data(self, img_matches: list[MatchData]):
+        assert img_matches is not None
 
-    def __get_next_id(self): 
-        ret = self.used_img_cnt
-        self.used_img_cnt += 1
-        return ret
-    
-    def optimize(self):
-        # https://imkaywu.github.io/blog/2017/10/focal-from-homography/
-        # https://stackoverflow.com/questions/71035099/how-can-i-call-opencv-focalsfromhomography-from-python
-        x0 = np.zeros(((self.used_img_cnt-1) * 4 ))
-        x0[0:3] = [0.1 +5.23598704e-01, 0.05+5.23598658e-01,  6.63581180e-10]
-        x0[3] =500 
+        for mdata in img_matches: 
+            img1_id, img2_id = mdata.img1_id, mdata.img2_id
+            img1_kpts, img2_kpts, H = mdata.img1_kpts, mdata.img2_kpts, mdata.H
+
+            # recenter points and compute new homography 
+            img1_kpts, img2_kpts, H = self.__recenter_keypoints(self.imgs[img1_id], self.imgs[img2_id], 
+                                                                img1_kpts, img2_kpts, H) 
+
+            # Store adjacency info and measurement data 
+            edge1to2 = (img2_id, OverlapData(img1_kpts, img2_kpts, H))
+            edge2to1 = (img1_id, OverlapData(img2_kpts, img1_kpts, np.linalg.inv(H)))
+
+            self.pose_graph_edges[img1_id].append(edge1to2)
+            self.pose_graph_edges[img2_id].append(edge2to1) 
+        
+    def optimize(self, central_img_id: int):
+        f = self.__estimate_camera_initial_focal()
+        print(f)
+
+        # hardcoded initialization for first two cameras
+        self.active_graph_nodes = [0, 1, 2, 3]
+
+        self.pose_graph_nodes[0].f = f
+        self.pose_graph_nodes[1].f = f
+        self.pose_graph_nodes[2].f = f
+        self.pose_graph_nodes[3].f = f
+
+        x0 = self.__pack_poses() 
+
+        # perform optimization
         res = least_squares(self.__eval_reprojection_error, x0, method='trf')
-        # find unique ids 
-        assert len(self.img_overlap_data) > 0 
+        print(res)
+        # TODO: check result is valid 
+        self.__unpack_poses(res.x)
 
+        print(self.active_graph_nodes) 
+        for pose in self.pose_graph_nodes:
+            print(pose)
+
+    def __pack_poses(self) -> np.ndarray: 
+        dim =  4 * (len(self.active_graph_nodes) - 1) + 1
+
+        # vector for packed poses
+        x = np.zeros(dim)
+
+        # active poses contains indices of camera poses, in the order they where included
+        node_id = self.active_graph_nodes[0]
+        x[0] = self.pose_graph_nodes[node_id].f 
+
+        for i in range(len(self.active_graph_nodes)-1):
+            node_id = self.active_graph_nodes[i+1]
+            pose = self.pose_graph_nodes[node_id]
+            x[4*i + 1] = pose.f
+            x[4*i + 2: 4*(i+1) + 1] = pose.rot
+        return x
+
+    def __unpack_poses(self, x: np.array): 
+        # handle first node separately (no rot data)
+        node_id = self.active_graph_nodes[0]
+        self.pose_graph_nodes[node_id].f = x[0]
+
+        for i in range(len(self.active_graph_nodes)-1):
+            node_id = self.active_graph_nodes[i+1]
+            self.pose_graph_nodes[node_id].f = x[4*i + 1] 
+            self.pose_graph_nodes[node_id].rot = x[4*i + 2: 4*(i+1) + 1]
 
     def __eval_reprojection_error(self, x: np.array) -> np.array:
-        phi_i, focal_i = np.zeros((3, )), x[3]
-        phi_j, focal_j = np.zeros((3, )), x[3]
+        # update camera poses with current estimate
+        self.__unpack_poses(x)
 
-        print(x)
-        cam_params = np.reshape(x, (-1, 4))
         errors = []
-        for img_i, img_j, kpts_i, kpts_j in self.img_overlap_data:
-            # unpack image details
-            i, size_i = self.img_data[img_i]
-            j, size_j = self.img_data[img_j]
+        for ni in self.active_graph_nodes:
+            for nj, overlap in self.pose_graph_edges[ni]:
 
-            # unpack camera params
-            if i != 0:
-                phi_i, focal_i = cam_params[i-1][0:3], cam_params[i-1][3]
-            cy_i, cx_i = size_i[0] / 2, size_i[1] / 2
+                # skip connections with inactive nodes
+                if nj not in self.active_graph_nodes: 
+                    continue
+                
+                # store poses & kpts 
+                kpts_i, kpts_j = overlap.src_kpts, overlap.dst_kpts
+                pose_i = self.pose_graph_nodes[ni]
+                pose_j = self.pose_graph_nodes[nj]
 
-            if j != 0:            
-                phi_j, focal_j = cam_params[j-1][0:3], cam_params[j-1][3]
-            cy_j, cx_j = size_j[0] / 2, size_j[1] / 2
-            
-            # compute camera intrinsics and extrinsics
-            Ki, Ri = create_cam_mat(focal_i, cx_i, cy_i), create_rot_mat(phi_i)
-            Kj, Rj = create_cam_mat(focal_j, cx_j, cy_j), create_rot_mat(phi_j)
+                # compute mapping from i to j:
+                Mji = pose_j.get_cam_mat() @ pose_i.get_inv_cam_mat() 
 
-            # compute full transform from i to j 
-            Tji = Kj @ Rj @ Ri.T @ np.linalg.inv(Ki)
-         
-            # transform keypoints i into j reference frame 
-            kpts_j_est = (Tji @ kpts_i.T).T
-            kpts_j_est = (kpts_j_est.T / kpts_j_est[:, 2]).T
+                # transform kpts_i int j frame
+                kpts_j_est = transform_points(Mji, kpts_i)
 
-            # compute residual
-            res = kpts_j - kpts_j_est
-            errors.append(np.linalg.norm(res, axis=1))
-        print(errors)
+                # compute residual
+                res = kpts_j - kpts_j_est
+                errors.append(np.linalg.norm(res, axis=1))
         return np.hstack(errors)
-
-def create_cam_mat(f: float, cx: float, cy: float) -> np.ndarray:
-    return np.array([[ f,  0, cx], 
-                     [ 0,  f, cy],
-                     [ 0,  0,  1]] )
-
-def create_rot_mat(phi: np.ndarray) -> np.ndarray: 
-    t = np.sqrt(np.dot(phi, phi))
-    ct, st = np.cos(t), np.sin(t)
-    n = phi / t if t != 0.0 else np.array([1.0, 0.0, 0.0])
-    return ct * np.eye(3) + (1 - ct) * np.outer(n, n)  + st * skew(n) 
-
-def skew(x: np.ndarray) -> np.ndarray:
-    return np.array([[0, -x[2], x[1]],
-                    [x[2], 0, -x[0]],
-                    [-x[1], x[0], 0]])
-
-def estimate_focal_length(M: np.ndarray) -> tuple[float|None, float|None]:
-    """
-        Estimates focal lengths based on the mapping matrix M (it is special case of homography matrix)
-        which can be decomposed into M = V_1 * R_10 * V_0^-1
-        Returns tuple of focal lengths
-    """
-    assert M.shape == (3, 3)
-    m = np.ravel(M) 
-
-    # estimated focal lengths 
-    f0, f1 = None, None
-
-    # Compute f0
-    d1 = m[0] * m[3] + m[1] * m[4]
-    d2 = m[0] * m[0] + m[1] * m[1] - m[3] * m[3] - m[4] * m[4]
-
-    v1 = -m[2] * m[5] / d1 if d1 != 0.0 else -1.0
-    v2 = (m[5] * m[5] - m[2] * m[2]) / d2 if d2 != 0.0 else -1.0
-
-    if v1 < v2: 
-        v1, v2 = v2, v1
-        d1, d2 = d2, d1
-    if v1 > 0 and v2 > 0: f0 = np.sqrt(v1 if abs(d1) > abs(d2) else v2)
-    elif v1 > 0: f0 = np.sqrt(v1) 
-
-    # Compute f1
-    d1 = m[6] * m[7]
-    d2 = (m[7] - m[6]) * (m[7] + m[6])
-
-    v1 = -(m[0] * m[1] + m[3] * m[4]) / d1 if d1 != 0.0 else -1.0
-    v2 = (m[0] * m[0] + m[3] * m[3] - m[1] * m[1] - m[4] * m[4]) / d2 if d2 != 0.0 else -1.0
-
-    if v1 < v2: 
-        v1, v2 = v2, v1
-        d1, d2 = d2, d1
-    if v1 > 0 and v2 > 0: f1 = np.sqrt(v1 if abs(d1) > abs(d2) else v2)
-    elif v1 > 0: f1 = np.sqrt(v1) 
-    return (f0, f1)
-
-def test_focal_est():
-    f0 = np.random.randint(34, 200)
-    f1 = np.random.randint(34, 500)
-
-    V0 = np.array([[f0, 0, 0], [0, f0, 0], [0, 0, 1]])
-    V1 = np.array([[f1, 0, 0], [0, f1, 0], [0, 0, 1]])
-    R01 = create_rot_mat(np.random.rand(3) * 2 * np.pi)
-    M = V1 @ R01 @ np.linalg.inv(V0)
     
-    print(f"Real values {f0=:}, {f1=:}")
-    ef0, ef1 = estimate_focal_length(M)
-    print(f"Estimated values {ef0=:}, {ef1=:}")
+    def __recenter_keypoints(self, img1: np.ndarray, img2: np.ndarray, 
+                             kpts1: np.ndarray, kpts2: np.ndarray, H: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            h, w, _ = img2.shape 
+            T2 = np.array([[1, 0, w/2], 
+                           [0, 1, h/2], 
+                           [0, 0 , 1]])
+            invT2 = np.linalg.inv(T2)
 
-if __name__ == "__main__":
-    test_focal_est()
-    # bundler = Bundler()
-    # h, w = 1000, 1000
-    # bundler.add_image(0, np.zeros((h, w)))
-    # bundler.add_image(1, np.zeros((h, w)))
+            h, w, _ = img1.shape
+            T1 = np.array([[1, 0, w/2],
+                           [0, 1, h/2],
+                           [0, 0, 1]])
+            invT1 = np.linalg.inv(T1)
 
-    # f = 700
-    # K = create_cam_mat(f, w/2, h/2) 
-    # R = create_rot_mat(np.pi/6 * np.array([1, 1, 0]))
-    # pts = []
-    # for i in range(100):
-    #     pts.append([np.random.randint(0, w/2), np.random.randint(0, h/2), 1]) 
-    # p1 = np.array(pts)
+            kpts1_shift = transform_points(invT1, kpts1)
+            kpts2_shift = transform_points(invT2, kpts2)
+            H_shift = invT2 @ H @ T1
+            return kpts1_shift, kpts2_shift, H_shift 
 
-    # #p1 = np.array([[100, 100, 1], [200, 200, 1], [300, 300, 1], [400, 400, 1]])
-    # p2 = (K @ R @ np.eye(3) @ np.linalg.inv(K) @ p1.T).T
-    # p2 = (p2.T / p2[:, 2]).T
-    # print(p1, '\n', p2)
 
-    # bundler.add_overlapping_points(0, 1, p1, p2 )
-    # bundler.optimize()
+    def __estimate_camera_initial_focal(self):
+        f_est = [] 
+        for c_id in self.pose_graph_edges: 
+            for _, overlap_data in self.pose_graph_edges[c_id]:
+                f = self.__estimate_focal_length(overlap_data.H)
+                if f is not None:
+                    f_est.append(f)
+
+        if len(f_est) > 0:
+            return np.median(f_est) 
+
+        # could not estimate focal length set value to something sane?  
+        return -1 
+
+    def __estimate_focal_length(self, M: np.ndarray) -> float|None:
+        """
+            Estimates focal length of camera 0 based on the mapping matrix M (it is special case of homography matrix)
+            which can be decomposed into M = V_1 * R_10 * V_0^-1
+            Returns tuple of focal lengths
+            Implementation based on: 
+                https://imkaywu.github.io/blog/2017/10/focal-from-homography/
+                https://stackoverflow.com/questions/71035099/how-can-i-call-opencv-focalsfromhomography-from-python
+        """
+        assert M.shape == (3, 3)
+        m = np.ravel(M) 
+
+        d1 = m[0] * m[3] + m[1] * m[4]
+        d2 = m[0] * m[0] + m[1] * m[1] - m[3] * m[3] - m[4] * m[4]
+
+        v1 = -m[2] * m[5] / d1 if d1 != 0.0 else -1.0
+        v2 = (m[5] * m[5] - m[2] * m[2]) / d2 if d2 != 0.0 else -1.0
+        
+        f0 = None 
+        if v1 < v2: 
+            v1, v2 = v2, v1
+            d1, d2 = d2, d1
+        if v1 > 0 and v2 > 0: f0 = np.sqrt(v1 if abs(d1) > abs(d2) else v2)
+        elif v1 > 0: f0 = np.sqrt(v1) 
+        return f0
+                
+import matplotlib.pyplot as plt
+
+class PoseVisualizer():
+
+    @staticmethod
+    def display(poses: list[CameraPose], imgs: list[np.ndarray]):
+        ax = plt.figure().add_subplot(projection='3d')
+
+        for i in range(len(poses)):
+            pts = PoseVisualizer.__get_camera_helper_pts(poses[i], imgs[i])
+            x, y, z = pts.T 
+            ax.plot(x, y, z, label='parametric curve')
+        
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        ax.set_title('Camera Pose Visualization')
+        ax.set_aspect('equal')
+        plt.show()
+    
+    @staticmethod
+    def __get_camera_helper_pts(pose: CameraPose, img: np.ndarray):
+        h, w = img.shape[0]/2, img.shape[1]/2
+        print(h, w)
+        f = pose.f
+
+        # camera gizmo points
+        pts = np.array([
+            # top
+            [0, 0, 0],
+            [-w, h, f],
+            [ w, h, f],
+            # right
+            [0, 0, 0],
+            [w, h, f],
+            [w,-h, f],
+            # bottom
+            [0, 0, 0],
+            [w,-h, f],
+            [-w,-h,f],
+            # left
+            [0, 0, 0],
+            [-w,-h,f],
+            [-w, h, f]
+        ]) 
+        # return rotated points
+        return (so3.exp(pose.rot).T @ pts.T).T 
+

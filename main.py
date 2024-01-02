@@ -2,7 +2,7 @@ import argparse
 import loader
 import time 
 from matcher import Matcher
-from bundler import Bundler
+from bundler import Bundler,PoseVisualizer
 from homography import *
 
 def main():
@@ -12,21 +12,18 @@ def main():
     args = parser.parse_args()
 
     imgs, imgs_exif = loader.load_batch(args.img_src_folder)
-    
     # compute image matches
     matcher = Matcher()
-    img_overlap_data = matcher.match(imgs)
+    match_data = matcher.match(imgs)
+    # match_data = matcher.match([imgs[0], imgs[1]])
     
-    # create bundler
+
     bundler = Bundler()
-    for i, img in enumerate(imgs):
-        bundler.add_image(i, img)
+    bundler.set_images(imgs)
+    bundler.set_match_data(match_data)
+    bundler.optimize(0)
 
-    for i, j, H, kpts1, kpts2 in img_overlap_data:
-        bundler.add_overlapping_points(i, j, kpts1, kpts2, H)
-        break 
-
-    bundler.optimize()
-
+    PoseVisualizer.display(bundler.pose_graph_nodes, imgs)
+    
 if __name__ == "__main__":
     main()

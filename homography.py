@@ -28,6 +28,10 @@ def estimate_homography_ransac(kpts1: np.ndarray, kpts2: np.ndarray, reproj_err=
             # store best model
             num_inliers, err_std, err_mean, inlier_mask = cur_num_inliers, curr_std, cur_err, curr_inlier_mask
             H = Hi
+
+        e = 1 - cur_num_inliers / num_keypoints + 1e-9
+        N = min(max_iters, int(np.log(1 - 0.99)/ np.log(1 - (1 - e)**4)))
+        
         i += 1
     
     # improve estimate using all points
