@@ -1,4 +1,4 @@
 import os
 
 def DEBUG_ENABLED():
-    return "DEBUG" in os.environ 
+    return int(os.environ["DEBUG"]) if "DEBUG" in os.environ else 0 
