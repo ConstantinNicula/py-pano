@@ -8,4 +8,5 @@ Dependencies:
 - Python >= 3.9
 - pip install opencv-python
 - pip install exifread
-- pip install numpy  
+- pip install numpy
+- pip install scipy  
