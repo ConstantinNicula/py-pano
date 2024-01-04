@@ -1,5 +1,6 @@
 import numpy as np
 import time
+
 def estimate_homography_ransac(kpts1: np.ndarray, kpts2: np.ndarray, reproj_err=5, max_iters=500, batch_size=50) -> tuple[np.ndarray, np.ndarray]:
     # Implementation based on: 
     # https://engineering.purdue.edu/kak/courses-i-teach/ECE661.08/solution/hw4_s1.pdf
@@ -176,6 +177,5 @@ def convert_to_homogenous(kpts: np.ndarray):
     return np.hstack((kpts, ones_col))
 
 def transform_points(H: np.ndarray, kpts: np.ndarray) -> np.ndarray:
-    kpts_t = (H @ kpts.T).T
-    return (kpts_t.T / kpts_t[:, 2]).T    
-    
+    kpts_t = kpts @ H.T
+    return kpts_t / kpts_t[:, 2, None]
