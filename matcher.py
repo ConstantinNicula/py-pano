@@ -24,7 +24,7 @@ class MatchData:
     H: np.ndarray
 
 class Matcher: 
-    def __init__(self, kpts_per_img:int = 2000, reproj_err:float=4): 
+    def __init__(self, kpts_per_img:int = 2000, reproj_err:float=3): 
         # # Params described https://docs.opencv.org/3.4/db/d95/classcv_1_1ORB.html
         self.kp_detector = cv2.SIFT.create(nfeatures=kpts_per_img)
         self.kp_matcher = cv2.BFMatcher.create(normType=cv2.NORM_L2)
