@@ -127,23 +127,26 @@ class Bundler:
 
             # perform optimization
             res = least_squares(self.__eval_reprojection_error, x0, method='trf', jac='2-point', verbose=2)
-
-            # TODO: check result is valid 
             print(res)
-
         # unpack final result and store data in pose_graph_nodes
         self.__unpack_poses(res.x)
-        
-        res = least_squares(self.__eval_reprojection_error, x0, method='trf', f_scale=3, loss='huber', jac='2-point', verbose=2)
-        self.__unpack_poses(res.x)
+
+        # final refine step 
+        # res = least_squares(self.__eval_reprojection_error, x0, method='trf', f_scale=3, loss='huber', jac='2-point', verbose=2)
+        # self.__unpack_poses(res.x)
+        # print(res)
 
         for i, j, overlap in self.active_edges: 
-            res = find_inliers(overlap.H, overlap.src_kpts, overlap.dst_kpts, 3)
-            print(f"{i} {j} -> {res[0]}/{len(overlap.src_kpts)}")
+            res_in = find_inliers(overlap.H, overlap.src_kpts, overlap.dst_kpts, 3)
+            print(f"{i} {j} -> {res_in[0]}/{len(overlap.src_kpts)}")
 
         print(self.active_node_ids) 
         for i, pose in enumerate(self.pose_graph_nodes):
             print(f"[{i}]: {pose}")
+
+
+        print(0.5 * np.linalg.norm(self.__eval_reprojection_error(res.x, False))**2)
+        print(0.5 * np.linalg.norm(self.__eval_reprojection_error(res.x, True))**2)
 
         # h, w, _ = self.imgs[0].shape
         # T1 = np.array([[1, 0, w/2],
@@ -235,7 +238,7 @@ class Bundler:
             self.pose_graph_nodes[node_id].f = x[4*i] 
             self.pose_graph_nodes[node_id].rot = x[4*i + 1: 4*(i+1)]
 
-    def __eval_reprojection_error(self, x: np.array) -> np.array:
+    def __eval_reprojection_error(self, x: np.array, lift: bool = True) -> np.array:
         # update camera poses with current estimate
         self.__unpack_poses(x)
 
@@ -258,7 +261,11 @@ class Bundler:
 
             # compute residual
             res = kpts_j - kpts_j_est
-            errors.append(np.linalg.norm(res, axis=1))
+
+            if lift:
+                errors.append(np.ravel(res))
+            else: 
+                errors.append(np.linalg.norm(res, axis=1))
         return np.hstack(errors)
     
     def __recenter_keypoints(self, img1: np.ndarray, img2: np.ndarray, 
