@@ -108,30 +108,33 @@ class Bundler:
 
         
     def optimize(self, central_img_id: int):
-        f = self.__estimate_camera_initial_focal() 
-        print(f)
-
-        # hardcoded initialization for first two cameras
+        # hardcoded initialization for first camera 
         self.active_node_ids = [0]
-        self.pose_graph_nodes[0].f = f
+        self.pose_graph_nodes[0].f = self.__estimate_camera_initial_focal() 
+        self.pose_graph_nodes[0].rot = np.zeros(3)
+
+        print (self.pose_graph_nodes[0].f)
 
         for i in range(len(self.pose_graph_nodes) - 1):
             # add a new image to optimize
             found_valid = self.__find_next_best_image()
-            continue
             
             # exist if no new image left to process 
             if not found_valid: break
 
-        # set x0 from current pose estimates 
-        x0 = self.__pack_poses() 
+            # set x0 from current pose estimates 
+            x0 = self.__pack_poses() 
 
-        # perform optimization
-        res = least_squares(self.__eval_reprojection_error, x0, method='trf', loss='huber', jac='3-point', verbose=2)
-        # TODO: check result is valid 
-        print(res)
+            # perform optimization
+            res = least_squares(self.__eval_reprojection_error, x0, method='trf', jac='2-point', verbose=2)
+
+            # TODO: check result is valid 
+            print(res)
 
         # unpack final result and store data in pose_graph_nodes
+        self.__unpack_poses(res.x)
+        
+        res = least_squares(self.__eval_reprojection_error, x0, method='trf', f_scale=3, loss='huber', jac='2-point', verbose=2)
         self.__unpack_poses(res.x)
 
         for i, j, overlap in self.active_edges: 
@@ -215,31 +218,22 @@ class Bundler:
         return True
 
     def __pack_poses(self) -> np.ndarray: 
-        dim =  4 * (len(self.active_node_ids) - 1) + 1
-
+        dim =  4 * len(self.active_node_ids)
         # vector for packed poses
         x = np.zeros(dim)
 
-        # active poses contains indices of camera poses, in the order they where included
-        node_id = self.active_node_ids[0]
-        x[0] = self.pose_graph_nodes[node_id].f 
-
-        for i in range(len(self.active_node_ids)-1):
-            node_id = self.active_node_ids[i+1]
+        for i in range(len(self.active_node_ids)):
+            node_id = self.active_node_ids[i]
             pose = self.pose_graph_nodes[node_id]
-            x[4*i + 1] = pose.f
-            x[4*i + 2: 4*(i+1) + 1] = pose.rot
+            x[4*i] = pose.f
+            x[4*i + 1: 4*(i+1)] = pose.rot
         return x
 
     def __unpack_poses(self, x: np.array): 
-        # handle first node separately (no rot data)
-        node_id = self.active_node_ids[0]
-        self.pose_graph_nodes[node_id].f = x[0]
-
-        for i in range(len(self.active_node_ids)-1):
-            node_id = self.active_node_ids[i+1]
-            self.pose_graph_nodes[node_id].f = x[4*i + 1] 
-            self.pose_graph_nodes[node_id].rot = x[4*i + 2: 4*(i+1) + 1]
+        for i in range(len(self.active_node_ids)):
+            node_id = self.active_node_ids[i]
+            self.pose_graph_nodes[node_id].f = x[4*i] 
+            self.pose_graph_nodes[node_id].rot = x[4*i + 1: 4*(i+1)]
 
     def __eval_reprojection_error(self, x: np.array) -> np.array:
         # update camera poses with current estimate
