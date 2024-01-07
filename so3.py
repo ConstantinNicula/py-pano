@@ -44,3 +44,11 @@ def hat(x: np.ndarray) -> np.ndarray:
 
 def vee(M: np.ndarray) -> np.ndarray:
     return np.array([M[2, 1], M[0, 2], M[1, 0]])
+
+def left_jacobian(phi: np.ndarray) -> np.ndarray:
+    theta = np.sqrt(np.dot(phi, phi))
+    if np.isclose(theta, 0): return np.eye(3)
+    a = phi / theta
+    return np.sin(theta) / theta * np.eye(3) + \
+           (1 - np.sin(theta) / theta) * np.outer(a, a) + \
+           (1 - np.cos(theta)) / theta * hat(a)
