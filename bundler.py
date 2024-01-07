@@ -1,5 +1,6 @@
 import numpy as np
 from collections import deque
+from scipy.sparse import csr_matrix
 from scipy.optimize import least_squares
 from dataclasses import dataclass
 from matcher import MatchData
@@ -110,10 +111,8 @@ class Bundler:
     def optimize(self, central_img_id: int):
         # hardcoded initialization for first camera 
         self.active_node_ids = [0]
-        self.pose_graph_nodes[0].f = self.__estimate_camera_initial_focal() 
+        self.pose_graph_nodes[0].f = self.__estimate_camera_initial_focal()
         self.pose_graph_nodes[0].rot = np.zeros(3)
-
-        print (self.pose_graph_nodes[0].f)
 
         for i in range(len(self.pose_graph_nodes) - 1):
             # add a new image to optimize
@@ -122,20 +121,33 @@ class Bundler:
             # exist if no new image left to process 
             if not found_valid: break
 
+            # slightly reduce focal length to ensure correct convergence
+            for pose in self.pose_graph_nodes:
+                pose.f *= 0.80   
+
             # set x0 from current pose estimates 
             x0 = self.__pack_poses() 
 
             # perform optimization
-            res = least_squares(self.__eval_reprojection_error, x0, method='trf', jac='2-point', verbose=2)
+            res = least_squares(self.__eval_reprojection_error, x0, 
+                                jac = self.__eval_jacobian,
+                                x_scale='jac', loss='huber', f_scale=50, 
+                                method='trf', verbose=2)
             print(res)
-        # unpack final result and store data in pose_graph_nodes
+            # unpack final result and store data in pose_graph_nodes
+            self.__unpack_poses(res.x)
+
+        print(res)
+        # final refine step
+        x0 = self.__pack_poses() 
+        res = least_squares(self.__eval_reprojection_error, x0, 
+                            jac = self.__eval_jacobian, 
+                            method='trf', f_scale=3, 
+                            loss='huber', verbose=2)
         self.__unpack_poses(res.x)
-
-        # final refine step 
-        # res = least_squares(self.__eval_reprojection_error, x0, method='trf', f_scale=3, loss='huber', jac='2-point', verbose=2)
-        # self.__unpack_poses(res.x)
-        # print(res)
-
+        print(res)
+        
+        # TODO: check optimization result 
         for i, j, overlap in self.active_edges: 
             res_in = find_inliers(overlap.H, overlap.src_kpts, overlap.dst_kpts, 3)
             print(f"{i} {j} -> {res_in[0]}/{len(overlap.src_kpts)}")
@@ -145,8 +157,7 @@ class Bundler:
             print(f"[{i}]: {pose}")
 
 
-        print(0.5 * np.linalg.norm(self.__eval_reprojection_error(res.x, False))**2)
-        print(0.5 * np.linalg.norm(self.__eval_reprojection_error(res.x, True))**2)
+        print(0.5 * np.linalg.norm(self.__eval_reprojection_error(res.x))**2)
 
         # h, w, _ = self.imgs[0].shape
         # T1 = np.array([[1, 0, w/2],
@@ -238,16 +249,15 @@ class Bundler:
             self.pose_graph_nodes[node_id].f = x[4*i] 
             self.pose_graph_nodes[node_id].rot = x[4*i + 1: 4*(i+1)]
 
-    def __eval_reprojection_error(self, x: np.array, lift: bool = True) -> np.array:
+    def __eval_reprojection_error(self, x: np.array) -> np.array:
         # update camera poses with current estimate
         self.__unpack_poses(x)
 
-        errors = []
+        # preallocate error array
+        N = np.sum([len(od.src_kpts) for _, _, od in self.active_edges])
+        errors = np.zeros(2 * N) 
+        offset = 0
         for ni, nj, overlap in self.active_edges:
-            # skip connections with inactive nodes
-            if nj not in self.active_node_ids: 
-                continue
-            
             # store poses & kpts 
             kpts_i, kpts_j = overlap.src_kpts, overlap.dst_kpts
             pose_i = self.pose_graph_nodes[ni]
@@ -262,12 +272,94 @@ class Bundler:
             # compute residual
             res = kpts_j - kpts_j_est
 
-            if lift:
-                errors.append(np.ravel(res))
-            else: 
-                errors.append(np.linalg.norm(res, axis=1))
-        return np.hstack(errors)
-    
+            # store result 
+            nr_params = 2 * len(overlap.src_kpts)
+            errors[offset: offset + nr_params] = np.ravel(res[:, 0:2])
+            offset += nr_params
+        return errors 
+
+
+    def __eval_jacobian(self, x: np.ndarray) -> np.ndarray:
+        # update camera poses with the current state 
+        self.__unpack_poses(x)
+
+        N = np.sum([len(od.src_kpts) for _, _, od in self.active_edges])
+        J = np.zeros((2 * N, len(x))) 
+        
+        ro = 0
+        for ni, nj, overlap in self.active_edges:
+            # Store poses & kpts 
+            kpts_i = overlap.src_kpts
+            pose_i = self.pose_graph_nodes[ni]
+            pose_j = self.pose_graph_nodes[nj]
+
+            # Compute J blocks 
+            Jb_i, Jb_j = self.__compute_jacobian_blocks(pose_i, pose_j, kpts_i)
+
+            oi = self.active_node_ids.index(ni)
+            oj = self.active_node_ids.index(nj)
+            
+            n = len(kpts_i) 
+            J[ro:ro+2*n, 4*oi: 4*(oi+1)] = Jb_i 
+            J[ro:ro+2*n, 4*oj: 4*(oj+1)] = Jb_j 
+            ro += 2*len(kpts_i)
+        return J
+
+    def __compute_jacobian_blocks(self, pose_i: CameraPose, pose_j: CameraPose, kpts_i: np.ndarray) -> tuple[np.ndarray, np.ndarray]:  
+        N = len(kpts_i)
+        J_i, J_j = np.zeros((2 * N, 4)), np.zeros((2 * N,4)) 
+
+        invRi = so3.exp(pose_i.rot).T
+        invKi = pose_i.get_inv_k_mat()
+        Rj = so3.exp(pose_j.rot)
+        Kj = pose_j.get_k_mat()
+        
+        # Common values 
+        kpts_i_stack = np.reshape(kpts_i, (N, 3, 1))
+        kpts_i_transf = kpts_i @ (Kj @ Rj @ invRi @ invKi).T
+        J_proj = self.compute_projection_jacobian(kpts_i_transf)
+        e = np.eye(3)
+
+        # Compute Jacobian block for pose i 
+        # Derivatives with respect to f1
+        dInvKi = np.array([[-1/pose_i.f**2, 0, 0], 
+                              [0, -1/pose_i.f**2, 0], 
+                              [0, 0, 0]])
+        J_i[:, 0] = np.ravel(J_proj @ Kj @ Rj @ invRi @ dInvKi @ kpts_i_stack)
+
+        # Derivative with respect to element of pose_1.rot 
+        JL_Ri = so3.left_jacobian(-pose_i.rot)
+        for i in range(3):
+            dInvRi = -so3.hat(JL_Ri @ e[i]) @ invRi 
+            J_i[:, i + 1] = np.ravel(J_proj @ Kj @ Rj @ dInvRi @ invKi @ kpts_i_stack)
+
+        # Compute jacobian block for pose j
+        # derivatives with respect to f2
+        dKj_df = np.array([[1, 0, 0],
+                           [0, 1, 0],
+                           [0, 0, 0]])
+        J_j[:, 0] = np.ravel(J_proj @ dKj_df @ Rj @ invRi @ invKi @ kpts_i_stack)
+
+        JL_Rj = so3.left_jacobian(pose_j.rot)
+        # compute derivative of R2 with respect to phi_i
+        for i in range(3):
+            dRj = so3.hat(JL_Rj @ e[i]) @ Rj 
+            J_j[:, i + 1] = np.ravel(J_proj @ Kj @ dRj @ invRi @ invKi @ kpts_i_stack)
+
+        return -J_i, -J_j
+
+    def compute_projection_jacobian(self, pts: np.ndarray) -> np.ndarray:
+        x, y, z = pts[:, 0], pts[:, 1], pts[:, 2]
+        N = len(pts)
+        J = np.zeros((2*N, 3)) 
+        # 1/z, 0, -x/z**2
+        J[::2, 0] = 1 / z 
+        J[::2, 2] = -x/np.power(z, 2)
+        # 0, 1/z, -y/z**2
+        J[1::2,1] = 1 / z 
+        J[1::2,2] = -y/np.power(z, 2) 
+        return np.reshape(J, (N, 2, 3))
+
     def __recenter_keypoints(self, img1: np.ndarray, img2: np.ndarray, 
                              kpts1: np.ndarray, kpts2: np.ndarray, H: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         h, w, _ = img2.shape 

@@ -12,11 +12,13 @@ def main():
     args = parser.parse_args()
 
     imgs, imgs_exif = loader.load_batch(args.img_src_folder)
+    
+    st = time.time()
     # compute image matches
     matcher = Matcher()
+    # match_data = matcher.match(imgs)
     match_data = matcher.match(imgs)
-    # match_data = matcher.match([imgs[0], imgs[1]])
-    
+    print(f"Time to match: {time.time() - st}s") 
 
     bundler = Bundler()
     bundler.set_images(imgs)
