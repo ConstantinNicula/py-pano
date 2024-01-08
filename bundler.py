@@ -511,7 +511,7 @@ class PoseVisualizer():
             # left
             [0, 0, 0], [-w,-h,f], [-w, h, f],
             # arrow
-            [-w/2, h, f], [0, h+w/3, f], [w/3, h, f]
+            [-w/2, -h, f], [0, -h-w/3, f], [w/3, -h, f]
         ]) 
         # return rotated points
         return (so3.exp(pose.rot).T @ pts.T).T 
