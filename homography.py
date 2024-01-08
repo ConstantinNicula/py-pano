@@ -154,8 +154,10 @@ def find_inliers(H: np.ndarray, kpts1: np.ndarray, kpts2: np.ndarray,
     # 1) compute transformed points 
     # p_est - M, N, 3 
     pt_est = kpts1 @ np.transpose(H, (0, 2, 1))
-    pt_est = pt_est / pt_est[:, :, 2, None]
-
+    
+    # Replaced pt_est = pt_est / pt_est[:, :, 2, None] to avoid NaNs
+    pt_est_z = pt_est[:, :, 2, None]
+    pt_est = np.divide(pt_est, pt_est_z, out=np.full(pt_est.shape, np.inf), where=pt_est_z!=0 )
     # 2) compute estimation error
     # err - M, N, 3  and norm_err = M, N, 1 
     err = kpts2 - pt_est
