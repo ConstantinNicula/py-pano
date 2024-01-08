@@ -16,7 +16,6 @@ def main():
     st = time.time()
     # compute image matches
     matcher = Matcher()
-    # match_data = matcher.match(imgs)
     match_data = matcher.match(imgs)
     print(f"Time to match: {time.time() - st}s") 
 
@@ -25,7 +24,7 @@ def main():
     bundler.set_match_data(match_data)
     bundler.optimize(0)
 
-    PoseVisualizer.display(bundler.pose_graph_nodes, imgs)
+    PoseVisualizer.display(bundler.pose_graph_nodes, imgs, [])
     
 if __name__ == "__main__":
     main()
