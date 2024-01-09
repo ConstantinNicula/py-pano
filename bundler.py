@@ -33,23 +33,38 @@ class CameraPose:
         self.rot = rot 
 
     def get_cam_mat(self):
-        return self.get_k_mat() @ so3.exp(self.rot) 
+        return CameraPose.cam_mat(self.f, self.rot) 
 
     def get_inv_cam_mat(self): 
-       return so3.exp(self.rot).T @ self.get_inv_k_mat() 
+       return CameraPose.inv_cam_mat(self.f, self.rot) 
 
     def get_k_mat(self): 
-        return np.array([[self.f, 0, 0], 
-                        [0, self.f, 0], 
-                        [0, 0, 1]])
+        return CameraPose.k_mat(self.f) 
 
     def get_inv_k_mat(self):
-        return np.array([[1/self.f, 0, 0], 
-                         [0, 1/self.f, 0], 
-                         [0, 0, 1]])
-    
+        return CameraPose.inv_k_mat(self.f)
+
     def __repr__(self):
         return f"f: {self.f} rot: {self.rot}"
+
+    @staticmethod
+    def cam_mat(f: float, rot: np.ndarray) -> np.ndarray: 
+        return  CameraPose.k_mat(f) @ so3.exp(rot)    
+
+    @staticmethod
+    def inv_cam_mat(f: float, rot: np.ndarray) -> np.ndarray: 
+        return  so3.exp(rot).T @ CameraPose.inv_k_mat(f)    
+
+    @staticmethod
+    def k_mat(f: float) -> np.ndarray:
+        return np.array([[f, 0, 0], 
+                         [0, f, 0], 
+                         [0, 0, 1]])
+    @staticmethod
+    def inv_k_mat(f: float) -> np.ndarray:
+        return np.array([[1/f, 0, 0], 
+                         [0, 1/f, 0], 
+                         [0, 0, 1]])
 
     @staticmethod
     def rot_from_homography(pose1, pose2, H21: np.ndarray) -> np.ndarray:
@@ -292,16 +307,21 @@ class Bundler:
 
         # preallocate error array
         N = np.sum([len(od.src_kpts) for _, _, od in self.active_edges])
-        errors = np.zeros(2 * N) 
-        offset = 0
+        err = np.zeros(2 * N) 
+        err_offset = 0
         for ni, nj, overlap in self.active_edges:
+            # # unpack pose data
+            # f_i, rot_i = x[ni][0], x[ni][1:4]  
+            # f_j, rot_j = x[nj][0], x[nj][1:4]
+
             # store poses & kpts 
             kpts_i, kpts_j = overlap.src_kpts, overlap.dst_kpts
             pose_i = self.pose_graph_nodes[ni]
             pose_j = self.pose_graph_nodes[nj]
 
             # compute mapping from i to j:
-            Mji = pose_j.get_cam_mat() @ pose_i.get_inv_cam_mat()  
+            # Mji = CameraPose.cam_mat(f_j, rot_j) @ CameraPose.inv_cam_mat(f_i, rot_i)
+            Mji = pose_j.get_cam_mat() @ pose_i.get_inv_cam_mat() 
 
             # transform kpts_i int j frame
             kpts_j_est = transform_points(Mji, kpts_i)
@@ -310,10 +330,10 @@ class Bundler:
             res = kpts_j - kpts_j_est
             
             # store result 
-            nr_params = 2 * len(overlap.src_kpts)
-            errors[offset: offset + nr_params] = np.ravel(res[:, 0:2])
-            offset += nr_params
-        return errors 
+            nr_err_terms = 2 * len(overlap.src_kpts)
+            err[err_offset: err_offset + nr_err_terms] = np.ravel(res[:, 0:2])
+            err_offset += nr_err_terms 
+        return err 
 
 
     def __eval_jacobian(self, x: np.ndarray) -> np.ndarray:
