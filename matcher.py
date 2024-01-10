@@ -24,7 +24,7 @@ class MatchData:
     H: np.ndarray
 
 class Matcher: 
-    def __init__(self, kpts_per_img:int = 2000, reproj_err:float=3): 
+    def __init__(self, kpts_per_img:int = 1250, reproj_err:float=3): 
         # # Params described https://docs.opencv.org/3.4/db/d95/classcv_1_1ORB.html
         self.kp_detector = cv2.SIFT.create(nfeatures=kpts_per_img)
         self.kp_matcher = cv2.BFMatcher.create(normType=cv2.NORM_L2)
@@ -53,7 +53,7 @@ class Matcher:
             for j in range(i + 1, len(imgs)):
                 # get ordered pairs of matching keypoints
                 m_kpts_i, m_kpts_j = self.__match_keypoints(img_keypoints[i], img_descriptors[i], img_keypoints[j], img_descriptors[j])
-                
+
                 # filter using geometric check
                 res = self.__check_valid_homography(imgs[i], imgs[j], m_kpts_i, m_kpts_j, self.repoj_err)
                 if res:
