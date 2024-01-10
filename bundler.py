@@ -74,8 +74,8 @@ class CameraPose:
         # R21 = K2^-1 * H21 * K1
 
         R21 = pose2.get_inv_k_mat() @ H21 @ pose1.get_k_mat()
-        R21 /= np.linalg.det(R21)
-        w21 = so3.log(R21)
+        w21 = so3.log(so3.normalize_mat(R21))
+        print(w21)
         return so3.log( so3.exp(w21) @ so3.exp(pose1.rot)) 
 
 class Bundler: 
@@ -96,11 +96,14 @@ class Bundler:
         # ids nodes which are currently being processed
         self.active_node_ids: list[int] = []
         self.active_edges: list[tuple(int, int, OverlapData)] = [] 
+        # stores mapping between n_i and x_i
+        self.node_state_offset: np.ndarray = None
 
     def set_images(self, imgs: list[np.ndarray]):
         assert imgs is not None
         self.imgs = imgs
         self.pose_graph_nodes = [CameraPose() for _ in imgs]
+        self.node_state_offset = np.zeros(len(self.pose_graph_nodes), dtype=np.int32)
 
     def set_match_data(self, img_matches: list[MatchData]):
         assert img_matches is not None
@@ -126,9 +129,9 @@ class Bundler:
         
     def optimize(self, central_img_id: int):
         # hardcoded initialization for first camera 
-        self.active_node_ids = [0]
         self.pose_graph_nodes[0].f = self.__estimate_camera_initial_focal()
         self.pose_graph_nodes[0].rot = np.zeros(3)
+        self.__mark_active_node(0)
 
         print(f">>>>>>> {self.pose_graph_nodes[0].f} <<<<<<<<<<<<")
         for i in range(len(self.pose_graph_nodes) - 1):
@@ -148,9 +151,8 @@ class Bundler:
                                 jac = self.__eval_jacobian,  
                                 x_scale = scale,
                                 method='lm', verbose=2)
-            if DEBUG_ENABLED():
-                print(res)
             # unpack final result and store data in pose_graph_nodes
+            if DEBUG_ENABLED(): print(res)
             self.__unpack_poses(res.x)
 
         # Do a final refine step
@@ -176,6 +178,9 @@ class Bundler:
         for i, pose in enumerate(self.pose_graph_nodes):
             print(f"[{i}]: {pose}")
 
+    def __mark_active_node(self, id: int): 
+        self.active_node_ids.append(id)
+        self.node_state_offset[id] = len(self.active_node_ids)-1    
     
     def __find_next_best_image(self) -> bool: 
         """
@@ -204,20 +209,22 @@ class Bundler:
             if matching_pts > max_matching_pts:
                 max_matching_pts, best_i = matching_pts, i
 
-        if DEBUG_ENABLED():
-            print(f"Found next image {best_i} with {max_matching_pts} overlapping points")
+        if DEBUG_ENABLED(): print(f"Found next image {best_i} with {max_matching_pts} overlapping points")
 
         # If we don't have a valid best_i early exit
         if best_i == -1: return False
 
         # 2) Find the index j of the best matching ref image 
-        overlap_poses = []
+        relative_rots = []
         max_matching_pts, best_j = 0, -1 
         for j in self.active_node_ids: 
             if (j, best_i) in self.pose_graph_edges: 
                 # store poses of overlapping images
-                overlap_poses.append(self.pose_graph_nodes[j])
-
+                pose_i = self.pose_graph_nodes[best_i]
+                pose_j = self.pose_graph_nodes[j]
+                Hji = self.pose_graph_edges[(j, best_i)].H
+                relative_rots.append(CameraPose.rot_from_homography(pose_j, pose_i, Hji))
+                
                 # extract overlap data
                 od = self.pose_graph_edges[(j, best_i)]
 
@@ -228,32 +235,30 @@ class Bundler:
                     max_matching_pts, best_j = len(od.src_kpts), j 
         # 3) Compute pose of camera i 
         # Flag node as active
-        self.active_node_ids.append(best_i)
+        self.__mark_active_node(best_i)
 
         # Update pose i based on pose j 
-        pose_i, pose_j = self.pose_graph_nodes[best_i], self.pose_graph_nodes[best_j] 
+        pose_i = self.pose_graph_nodes[best_i] 
+        pose_j = self.pose_graph_nodes[best_j]
         pose_i.f = pose_j.f
 
         # Compute ideal rotation
-        if len(overlap_poses) == 1: # inherit rotation from pose_j
-            Hij = self.pose_graph_edges[(best_j, best_i)].H
-            pose_i.rot = CameraPose.rot_from_homography(pose_j, pose_i, Hij)
-            if DEBUG_ENABLED():
-                print(f"Pose {best_i} inherits from pose {best_j}")
+        if len(relative_rots) == 1: # inherit rotation from pose_j
+            pose_i.rot = relative_rots[0]
+            if DEBUG_ENABLED(): print(f"Pose {best_i} inherits from pose {best_j}")
         else: 
-            pose_i.rot = self.__compute_average_rotation(overlap_poses)
-            if DEBUG_ENABLED():
-                print(f"Pose {best_i} computed from average pose")
+            pose_i.rot = self.__compute_average_rotation(relative_rots)
+            if DEBUG_ENABLED(): print(f"Pose {best_i} computed from average pose")
         return True
 
-    def __compute_average_rotation(self, poses: list[CameraPose]) -> np.ndarray:
+    def __compute_average_rotation(self, relative_rots: list[np.ndarray]) -> np.ndarray:
         x_axis_avg = np.zeros(3)
         z_axis_avg = np.zeros(3)
 
         # loop over poses and accumulate average axis directions
-        for pose in poses:
+        for rot in relative_rots:
             # R is local to world matrix
-            R = so3.exp(pose.rot)
+            R = so3.exp(rot)
 
             # columns of R.T are axis vectors for pose_i
             x_axis_avg += R[0]
@@ -268,11 +273,10 @@ class Bundler:
         y_axis_avg = -np.cross(x_axis_avg, z_axis_avg)        
         z_axis_avg = np.cross(x_axis_avg, y_axis_avg)
 
-
+        # Compute final rotation matrix
         R_avg = np.array([x_axis_avg, 
                           y_axis_avg, 
                           z_axis_avg])
-        print(f"det is {np.linalg.det(R_avg)}") 
         return so3.log(R_avg).T
 
 
@@ -288,40 +292,38 @@ class Bundler:
         # vector for packed poses
         x = np.zeros(dim)
 
-        for i in range(len(self.active_node_ids)):
-            node_id = self.active_node_ids[i]
+        for i, node_id in enumerate(self.active_node_ids):
             pose = self.pose_graph_nodes[node_id]
             x[4*i] = pose.f
             x[4*i + 1: 4*(i+1)] = pose.rot
         return x
 
     def __unpack_poses(self, x: np.array): 
-        for i in range(len(self.active_node_ids)):
-            node_id = self.active_node_ids[i]
+        for i, node_id in enumerate(self.active_node_ids):
             self.pose_graph_nodes[node_id].f = x[4*i] 
             self.pose_graph_nodes[node_id].rot = x[4*i + 1: 4*(i+1)]
 
     def __eval_reprojection_error(self, x: np.array) -> np.array:
         # update camera poses with current estimate
-        self.__unpack_poses(x)
+        x = np.reshape(x, (-1, 4))
 
         # preallocate error array
         N = np.sum([len(od.src_kpts) for _, _, od in self.active_edges])
-        err = np.zeros(2 * N) 
-        err_offset = 0
+        err, err_offset = np.zeros(2 * N), 0 
         for ni, nj, overlap in self.active_edges:
-            # # unpack pose data
-            # f_i, rot_i = x[ni][0], x[ni][1:4]  
-            # f_j, rot_j = x[nj][0], x[nj][1:4]
+            # get the true state offset
+            oi = self.node_state_offset[ni]
+            oj = self.node_state_offset[nj]
 
-            # store poses & kpts 
+            # unpack pose data
+            f_i, rot_i = x[oi, 0], x[oi, 1:4]  
+            f_j, rot_j = x[oj, 0], x[oj, 1:4]
+
+            # get kpts 
             kpts_i, kpts_j = overlap.src_kpts, overlap.dst_kpts
-            pose_i = self.pose_graph_nodes[ni]
-            pose_j = self.pose_graph_nodes[nj]
 
             # compute mapping from i to j:
-            # Mji = CameraPose.cam_mat(f_j, rot_j) @ CameraPose.inv_cam_mat(f_i, rot_i)
-            Mji = pose_j.get_cam_mat() @ pose_i.get_inv_cam_mat() 
+            Mji = CameraPose.cam_mat(f_j, rot_j) @ CameraPose.inv_cam_mat(f_i, rot_i)
 
             # transform kpts_i int j frame
             kpts_j_est = transform_points(Mji, kpts_i)
@@ -338,54 +340,61 @@ class Bundler:
 
     def __eval_jacobian(self, x: np.ndarray) -> np.ndarray:
         # update camera poses with the current state 
-        self.__unpack_poses(x)
+        x = np.reshape(x, (-1, 4))
 
+        # preallocate Jacobian matrix
         N = np.sum([len(od.src_kpts) for _, _, od in self.active_edges])
-        J = np.zeros((2 * N, len(x))) 
-        
-        ro = 0
+        M = 4 * len(x)
+
+        J, ro = np.zeros((2 * N, M)), 0 
         for ni, nj, overlap in self.active_edges:
-            # Store poses & kpts 
+            # get state offset 
+            oi = self.node_state_offset[ni]
+            oj = self.node_state_offset[nj]
+
+            # unpack pose data
+            f_i, rot_i = x[oi, 0], x[oi, 1:4]  
+            f_j, rot_j = x[oj, 0], x[oj, 1:4]
+
+            # get kpts 
             kpts_i = overlap.src_kpts
-            pose_i = self.pose_graph_nodes[ni]
-            pose_j = self.pose_graph_nodes[nj]
 
             # Compute J blocks 
-            Jb_i, Jb_j = self.__compute_jacobian_blocks(pose_i, pose_j, kpts_i)
+            Jb_i, Jb_j = self.__compute_jacobian_blocks(f_i, rot_i, f_j, rot_j, kpts_i)
 
-            oi = self.active_node_ids.index(ni)
-            oj = self.active_node_ids.index(nj)
-            
-            n = len(kpts_i) 
-            J[ro:ro+2*n, 4*oi: 4*(oi+1)] = Jb_i 
-            J[ro:ro+2*n, 4*oj: 4*(oj+1)] = Jb_j 
-            ro += 2*len(kpts_i)
+            # Store blocks
+            nr_terms = 2 * len(kpts_i) 
+            J[ro:ro + nr_terms, 4*oi: 4*(oi+1)] = Jb_i 
+            J[ro:ro + nr_terms, 4*oj: 4*(oj+1)] = Jb_j 
+            ro += nr_terms 
         return J
 
-    def __compute_jacobian_blocks(self, pose_i: CameraPose, pose_j: CameraPose, kpts_i: np.ndarray) -> tuple[np.ndarray, np.ndarray]:  
+    def __compute_jacobian_blocks(self, f_i: float, rot_i: np.ndarray, 
+                                        f_j: float, rot_j: np.ndarray, 
+                                        kpts_i: np.ndarray) -> tuple[np.ndarray, np.ndarray]:  
         N = len(kpts_i)
-        J_i, J_j = np.zeros((2 * N, 4)), np.zeros((2 * N,4)) 
+        J_i, J_j = np.zeros((2*N, 4)), np.zeros((2*N, 4)) 
 
-        invRi = so3.exp(pose_i.rot).T
-        invKi = pose_i.get_inv_k_mat()
-        Rj = so3.exp(pose_j.rot)
-        Kj = pose_j.get_k_mat()
+        invRi = so3.exp(rot_i).T
+        invKi = CameraPose.inv_k_mat(f_i) 
+        Rj = so3.exp(rot_j)
+        Kj = CameraPose.k_mat(f_j)
         
         # Common values 
         kpts_i_stack = np.reshape(kpts_i, (N, 3, 1))
         kpts_i_transf = kpts_i @ (Kj @ Rj @ invRi @ invKi).T
-        J_proj = self.compute_projection_jacobian(kpts_i_transf)
+        J_proj = self.__compute_projection_jacobian(kpts_i_transf)
         e = np.eye(3)
 
         # Compute Jacobian block for pose i 
         # Derivatives with respect to f1
-        dInvKi = np.array([[-1/pose_i.f**2, 0, 0], 
-                              [0, -1/pose_i.f**2, 0], 
-                              [0, 0, 0]])
+        dInvKi = np.array([[-1/f_i**2, 0, 0], 
+                           [0, -1/f_i**2, 0], 
+                           [0, 0, 0]])
         J_i[:, 0] = np.ravel(J_proj @ Kj @ Rj @ invRi @ dInvKi @ kpts_i_stack)
 
         # Derivative with respect to element of pose_1.rot 
-        JL_Ri = so3.left_jacobian(-pose_i.rot)
+        JL_Ri = so3.left_jacobian(-rot_i)
         for i in range(3):
             dInvRi = -so3.hat(JL_Ri @ e[i]) @ invRi 
             J_i[:, i + 1] = np.ravel(J_proj @ Kj @ Rj @ dInvRi @ invKi @ kpts_i_stack)
@@ -397,7 +406,7 @@ class Bundler:
                            [0, 0, 0]])
         J_j[:, 0] = np.ravel(J_proj @ dKj_df @ Rj @ invRi @ invKi @ kpts_i_stack)
 
-        JL_Rj = so3.left_jacobian(pose_j.rot)
+        JL_Rj = so3.left_jacobian(rot_j)
         # compute derivative of R2 with respect to phi_i
         for i in range(3):
             dRj = so3.hat(JL_Rj @ e[i]) @ Rj 
@@ -405,7 +414,7 @@ class Bundler:
 
         return -J_i, -J_j
 
-    def compute_projection_jacobian(self, pts: np.ndarray) -> np.ndarray:
+    def __compute_projection_jacobian(self, pts: np.ndarray) -> np.ndarray:
         x, y, z = pts[:, 0], pts[:, 1], pts[:, 2]
         N = len(pts)
         J = np.zeros((2*N, 3)) 
@@ -531,7 +540,7 @@ class PoseVisualizer():
             # left
             [0, 0, 0], [-w,-h,f], [-w, h, f],
             # arrow
-            [-w/2, -h, f], [0, -h-w/3, f], [w/3, -h, f]
+            [-w, -h, f], [-w/2, -h, f], [0, -h-w/3, f], [w/3, -h, f]
         ]) 
         # return rotated points
         return (so3.exp(pose.rot).T @ pts.T).T 
