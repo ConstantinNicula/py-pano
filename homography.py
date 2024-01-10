@@ -1,7 +1,7 @@
 import numpy as np
 import time
 
-def estimate_homography_ransac(kpts1: np.ndarray, kpts2: np.ndarray, reproj_err=5, max_iters=500, batch_size=50) -> tuple[np.ndarray, np.ndarray]:
+def estimate_homography_ransac(kpts1: np.ndarray, kpts2: np.ndarray, reproj_err=5, max_iters=500, batch_size=100) -> tuple[np.ndarray, np.ndarray]:
     # Implementation based on: 
     # https://engineering.purdue.edu/kak/courses-i-teach/ECE661.08/solution/hw4_s1.pdf
     num_keypoints = len(kpts1)
@@ -54,7 +54,7 @@ def estimate_homography_ransac(kpts1: np.ndarray, kpts2: np.ndarray, reproj_err=
         H = refine_estimate(kpts1[inlier_mask], kpts2[inlier_mask])
         num_inliers, err_std, err_mean, inlier_mask = find_inliers(H, kpts1, kpts2, reproj_err)
         inlier_mask = inlier_mask[0] # cast to proper size
-
+    
     return H, inlier_mask
 
 
@@ -158,6 +158,7 @@ def find_inliers(H: np.ndarray, kpts1: np.ndarray, kpts2: np.ndarray,
     # Replaced pt_est = pt_est / pt_est[:, :, 2, None] to avoid NaNs
     pt_est_z = pt_est[:, :, 2, None]
     pt_est = np.divide(pt_est, pt_est_z, out=np.full(pt_est.shape, np.inf), where=pt_est_z!=0 )
+
     # 2) compute estimation error
     # err - M, N, 3  and norm_err = M, N, 1 
     err = kpts2 - pt_est
