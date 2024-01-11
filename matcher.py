@@ -75,7 +75,7 @@ class Matcher:
         kpts = convert_to_homogenous(np.array([kp.pt for kp in cv_kpts]))
         return kpts, desc 
 
-    def __match_keypoints(self, kpts1: np.ndarray, desc1: np.ndarray, kpts2: np.ndarray, desc2: np.ndarray) -> tuple[None|np.ndarray, None|np.ndarray]:
+    def __match_keypoints(self, kpts1: np.ndarray, desc1: np.ndarray, kpts2: np.ndarray, desc2: np.ndarray, n_repeated=3) -> tuple[None|np.ndarray, None|np.ndarray]:
         """
             Matches two sets of ORB descriptors 
             Returns tuple (m_kpts1, m_kpts2) of ndarrays which specify matching points m_kpts1[0] <-> m_kpts2[0] 
@@ -98,7 +98,7 @@ class Matcher:
             train_to_query[train_id].sort(key = lambda m: m[1]) 
         
             # currently taking only the two best
-            for i in range(min(len(train_to_query[train_id]), 2)):
+            for i in range(min(len(train_to_query[train_id]), n_repeated)):
                 query_id, _ = train_to_query[train_id][i]
                 good_kpts2.append(train_id)
                 good_kpts1.append(query_id)
