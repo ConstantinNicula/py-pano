@@ -281,11 +281,41 @@ class Bundler:
 
 
     def __remove_camera_rotations(self):
-        R_ref = so3.exp(self.pose_graph_nodes[0].rot)
+        # https://math.stackexchange.com/questions/180418/calculate-rotation-matrix-to-align-vector-a-to-vector-b-in-3d
+
+        # Compute up vector as the null vector of 
+        # the covariance matrix of camera X vectors
+        X = np.zeros((3, 3))
+        for ni in self.active_node_ids:
+            # Rotation from global RF to camera ni RF
+            Ri = so3.exp(self.pose_graph_nodes[ni].rot)
+
+            # X axis is column 0 of Ri.T or row 0 of Ri
+            X += np.outer(Ri[0], Ri[0]) 
+
+        # Find null space of X and extract up vector u
+        _, _, Vh = np.linalg.svd(X)  
+        u = Vh[-1, :]
+
+        # make sure u is pointing in the direction of camera y axis 
+        ref_i = self.active_node_ids[0]
+        ref_y = so3.exp(self.pose_graph_nodes[ref_i].rot)[1]
+        if np.dot(u, ref_y) < 0:
+            u *= -1
+
+        # compute alignment rotations 
+        w = np.cross(u, np.array([0, 1, 0]))
+        n = w / np.linalg.norm(w)
+        c = np.dot(u, np.array([0, 1, 0])) 
+        s = np.linalg.norm(w)
+
+        # aligns u to camera y axis (global to local ref) 
+        R_align = c * np.eye(3) + (1 - c) * np.outer(n, n) + s * so3.hat(n) 
+
+        # apply rotation to all nodes
         for ni in self.active_node_ids:
             pose_i = self.pose_graph_nodes[ni]
-            pose_i.rot = so3.log(so3.exp(pose_i.rot) @ R_ref.T)
-
+            pose_i.rot = so3.log(so3.exp(pose_i.rot) @ R_align.T)
 
     def __pack_poses(self) -> np.ndarray: 
         dim =  4 * len(self.active_node_ids)
@@ -372,6 +402,9 @@ class Bundler:
     def __compute_jacobian_blocks(self, f_i: float, rot_i: np.ndarray, 
                                         f_j: float, rot_j: np.ndarray, 
                                         kpts_i: np.ndarray) -> tuple[np.ndarray, np.ndarray]:  
+        # Refs for rotation partial derivatives:
+        # https://natanaso.github.io/ece276a2020/ref/ECE276A_12_SO3_SE3.pdf
+        
         N = len(kpts_i)
         J_i, J_j = np.zeros((2*N, 4)), np.zeros((2*N, 4)) 
 
@@ -493,7 +526,7 @@ import matplotlib.pyplot as plt
 class PoseVisualizer():
 
     @staticmethod
-    def display(poses: list[CameraPose], imgs: list[np.ndarray], overlap_pts: None = None):
+    def display(poses: list[CameraPose], imgs: list[np.ndarray], overlap_pts: list ):
         ax = plt.figure().add_subplot(projection='3d')
 
         for i in range(len(poses)):
@@ -516,6 +549,18 @@ class PoseVisualizer():
             ptsj_rot = ptsj @ (so3.exp(poses[j].rot).T).T
             x, y, z = ptsj_rot.T
             ax.scatter3D(x, y, z)
+
+        # # render up vector: 
+        # x, y, z = np.array([[0, 0, 0], up * 2000]).T 
+        # ax.plot(x, y, z)
+
+        # # render x vector 
+        # vecs = np.zeros((2*len(poses), 3)) 
+        # for i in range(len(poses)): 
+        #     vecs[2*i, :] = 2000 *so3.exp(poses[i].rot)[0]
+
+        # x, y, z = vecs.T 
+        # ax.plot(x, y, z)
 
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
