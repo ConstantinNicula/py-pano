@@ -32,7 +32,7 @@ def estimate_homography_ransac(kpts1: np.ndarray, kpts2: np.ndarray, reproj_err=
             # this is kind of a hack not sure if there is any proof that <0 det => bad homographies
             if np.linalg.det(H_batch[j]) < 0: 
                 continue
-            if batch_num_inliers[j] > max(4, num_inliers) or \
+            if batch_num_inliers[j] > max(8, num_inliers) or \
             (batch_num_inliers[j] == num_inliers and batch_std[j] < err_std):
                 # update estimate
                 best_j = j
