@@ -215,7 +215,7 @@ class Bundler:
         if best_i == -1: return False
 
         # 2) Find the index j of the best matching ref image 
-        relative_rots = []
+        estimated_rots = []
         max_matching_pts, best_j = 0, -1 
         for j in self.active_node_ids: 
             if (j, best_i) in self.pose_graph_edges: 
@@ -223,7 +223,7 @@ class Bundler:
                 pose_i = self.pose_graph_nodes[best_i]
                 pose_j = self.pose_graph_nodes[j]
                 Hji = self.pose_graph_edges[(j, best_i)].H
-                relative_rots.append(CameraPose.rot_from_homography(pose_j, pose_i, Hji))
+                estimated_rots.append(CameraPose.rot_from_homography(pose_j, pose_i, Hji))
                 
                 # extract overlap data
                 od = self.pose_graph_edges[(j, best_i)]
@@ -243,13 +243,52 @@ class Bundler:
         pose_i.f = pose_j.f
 
         # Compute ideal rotation
-        if len(relative_rots) == 1: # inherit rotation from pose_j
-            pose_i.rot = relative_rots[0]
+        if len(estimated_rots) == 1: # inherit rotation from pose_j
+            pose_i.rot = estimated_rots[0]
             if DEBUG_ENABLED(): print(f"Pose {best_i} inherits from pose {best_j}")
         else: 
-            pose_i.rot = self.__compute_average_rotation(relative_rots)
+            pose_i.rot = self.__compute_average_rotation(estimated_rots)
             if DEBUG_ENABLED(): print(f"Pose {best_i} computed from average pose")
+            self.__adjust_poses(best_i)
         return True
+
+    def __adjust_poses(self, st_id: int, angle_threshold:float = np.pi/5): 
+        """
+            Attempts to solve convergence issues by adjusting poses that have an 
+            angular deviation higher than a given threshold. Only direct neighbors of 
+            st_id pose are adjusted. 
+        """
+        # 0) extract neighboring pose ids
+        st_nbs = self.__get_neighbors_of_pose(st_id) 
+
+        # 1) loop over neighboring poses and adjust
+        for i in st_nbs: 
+            adjust_needed = False
+            i_nbs_rot = []
+            
+            pose_i = self.pose_graph_nodes[i]
+            i_nbs = self.__get_neighbors_of_pose(i)
+            for j in i_nbs:
+                pose_j = self.pose_graph_nodes[j] 
+                
+                # Compute relative angle between poses
+                rel_rot = so3.log(so3.exp(pose_i.rot) @ so3.exp(pose_j.rot).T) 
+                angle = np.fmod(np.linalg.norm(rel_rot), np.pi)
+
+                # If angle exceeds threshold, set update flag 
+                if np.abs(angle) > angle_threshold:
+                    adjust_needed = True
+                
+                # Store global rotation of pose j
+                i_nbs_rot.append(pose_j.rot)
+            
+            # Set rotation to average of neighbors
+            if adjust_needed:
+                print(f"Adjusted pose {i}")
+                pose_i.rot = self.__compute_average_rotation(i_nbs_rot)
+    
+    def __get_neighbors_of_pose(self, i: int):
+        return [j for j in self.active_node_ids if (j, i) in self.pose_graph_edges]
 
     def __compute_average_rotation(self, relative_rots: list[np.ndarray]) -> np.ndarray:
         x_axis_avg = np.zeros(3)
