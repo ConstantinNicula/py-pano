@@ -2,7 +2,7 @@ import os
 import cv2
 import numpy as np
 import exifread
-from utils import *
+from debug_utils import *
 
 valid_img_extensions = ( ".jpg", ".jpeg", ".png", ".bmp")
 
