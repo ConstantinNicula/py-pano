@@ -50,8 +50,6 @@ class ImageBounds:
         extent_h = max_int_h - min_int_h
         return (min_int_w, min_int_h, extent_w, extent_h)
 
-    def test():
-        return
 
 class Composer:
     def __init__(self, imgs: list[np.ndarray], poses: list[CameraPose]):
@@ -65,14 +63,14 @@ class Composer:
         # Storage for internals  
         self.warped_bounds: list[ImageBounds] = [] 
         self.composite_image: np.ndarray = None 
-        self.__compute_bounds() 
+        self.__compute_image_bounds() 
 
     def __compute_scale(self) -> float: 
         cam_focal_lengths = [pose.f for pose in self.poses] 
         return np.median(cam_focal_lengths)
 
-    # TO DO: may not work if images are flipped 
-    def __compute_bounds(self) -> list[tuple[int]]:
+    # NOTE: may not work if images are flipped 
+    def __compute_image_bounds(self) -> list[tuple[int]]:
         min_left, min_top = np.inf, np.inf # top left corner of warped ROI
         max_right, max_bottom = -np.inf, -np.inf # bottom right corner of warped ROI 
 
@@ -102,25 +100,37 @@ class Composer:
         full_height = max_bottom - min_top + 1 
         self.composite_image = np.zeros((full_height, full_width, 3), dtype=np.uint8)
 
-        self.__compute_influence_mask()
-
-    def __compute_influence_mask(self):
-
-        # Compute weights for all images: 
-        weights = []
+    # TODO: allow scaling
+    def __compute_warped_weights(self) -> list[np.ndarray]: 
+        warped_weights = []
         for img, pose in zip(self.imgs, self.poses):
-            weights.append(self.__compute_warped_weights(img, pose))
+            w, h = get_width_height(img) 
 
-        masks = []
-        for i in range(len(self.imgs)):
+            # Generate varying values from 0..1..0
+            weights_x = 1.0 - np.abs(np.linspace(-1.0, 1.0, w)) 
+            weights_y = 1.0 - np.abs(np.linspace(-1.0, 1.0, h))
+
+            # Take outer product to compute full weight matrix 
+            weights_xy = np.outer(weights_y, weights_x)
+
+            # Convert weight to spherical coords 
+            warped_weights.append(self.__compute_warped_image(weights_xy, pose)) 
+        return warped_weights
+
+    def __compute_influence_masks(self, warped_weights: list[np.ndarray]) -> list[np.ndarray]:
+        influence_masks = []
+        
+        # Compute influence masks for all images:
+        num_imgs = len(self.imgs)
+        for i in range(num_imgs):
             img = self.imgs[i]
             pose = self.poses[i]
 
             # Set initial mask 1 where warped weight > 0 
-            mask = weights[i] > 0
+            mask = warped_weights[i] > 0
 
             # Update influence mask
-            for j in range(len(self.imgs)):
+            for j in range(num_imgs):
                 if i == j: continue 
 
                 # Compute bounds for intersection:
@@ -133,31 +143,15 @@ class Composer:
                 pxi, pyi = self.warped_bounds[i].relative_pos(px, py)
 
                 # Update mask in region 
-                weight_j = weights[j][pyj:pyj+h, pxj:pxj+w]
-                weight_i = weights[i][pyi:pyi+h, pxi:pxi+w]
-                mask[pyi:pyi+h, pxi:pxi+w] &= weight_i > weight_j
+                weight_j = warped_weights[j][pyj:pyj+h, pxj:pxj+w]
+                weight_i = warped_weights[i][pyi:pyi+h, pxi:pxi+w]
+                mask[pyi:pyi+h, pxi:pxi+w] &= weight_i > weight_j # abuse of bitwise op?? 
+            influence_masks.append(mask.astype(np.float32))
 
-            masks.append(mask.astype(np.float32))
-            # mask_img = mask.astype(np.float32)
-            # cv2.imshow(f"mask{i}", mask_img)
+        return influence_masks
 
-        return masks 
-
-    # TODO: allow scaling
-    def __compute_warped_weights(self, img: np.ndarray, pose: CameraPose) -> np.ndarray: 
-        w, h = get_width_height(img) 
-
-        # generate varying values from 0..1..0
-        weights_x = 1.0 - np.abs(np.linspace(-1.0, 1.0, w)) 
-        weights_y = 1.0 - np.abs(np.linspace(-1.0, 1.0, h))
-
-        # take outer product to compute full weight matrix 
-        weights_xy = np.outer(weights_y, weights_x)
-
-        # convert weight to spherical coords 
-        return self.__compute_warped_image(weights_xy, pose) 
-
-
+    def __compute_blend_bands(self, warp_img: np.ndarray, warp_weight: np.ndarray, inf_mask: np.ndarray): 
+        return 
     def __compute_warped_image(self, img: np.ndarray, pose: CameraPose) -> np.ndarray:
         invR = pose.get_inv_r_mat().astype(np.float32)
         K = pose.get_k_mat().astype(np.float32)
@@ -166,17 +160,16 @@ class Composer:
 
     def compose(self) -> np.ndarray:
         # TODO: rework
-        masks = self.__compute_influence_mask()
-        for img, pose, bounds, mask in zip(self.imgs, self.poses, self.warped_bounds, masks):
+        warped_masks = self.__compute_warped_weights()
+        influence_mask = self.__compute_influence_masks(warped_masks)
+        for img, pose, bounds, mask in zip(self.imgs, self.poses, self.warped_bounds, influence_mask):
             warped_img = self.__compute_warped_image(img, pose)
             self.__paste_image(warped_img, bounds, mask)
         return self.composite_image 
 
     # TODO: rework
     def __paste_image(self, warped_img: np.ndarray, bounds: ImageBounds, weight: list[np.ndarray]): 
-        # dst = self.composite_image[bounds.min_h:bounds.max_h, bounds.min_w: bounds.max_w]
         h, w = weight.shape
         weight = np.reshape(weight, (h, w, 1))
         res = warped_img * weight 
-        # res = np.where(warped_img != np.array([0, 0, 0]), warped_img, dst)
         self.composite_image[bounds.min_h:bounds.max_h, bounds.min_w: bounds.max_w] += res.astype(np.uint8)
