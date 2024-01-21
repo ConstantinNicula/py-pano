@@ -100,58 +100,47 @@ class Composer:
         full_height = max_bottom - min_top + 1 
         self.composite_image = np.zeros((full_height, full_width, 3), dtype=np.uint8)
 
-    def compose(self, num_bands=2) -> np.ndarray:
-        # TODO: rework
+    def compose(self, num_bands=3) -> np.ndarray:
+        # Compute blending bands
         all_block_bands, all_block_weights = self.__compute_blend_bands(num_bands=num_bands)
-        
-        # create output for final image
+
+        # Create output for final image
         img_shape = self.composite_image.shape 
         full_acc = np.zeros(img_shape, dtype=np.float32)
 
         for k in range(num_bands): 
-            # create accumulator images for intermediates 
+            # Create accumulator images for intermediates 
             band_acc = np.zeros(img_shape, dtype=np.float32)
             weight_acc = np.full((img_shape[0], img_shape[1]), 1e-6, dtype=np.float32)  
 
-            for bounds, block_bands, block_weights in zip(self.warped_bounds, all_block_bands, all_block_weights):
+            for bounds, block_bands, block_weights in zip(self.warped_bounds, all_block_bands[k], all_block_weights[k]):
                 # write image data
-                self.__paste_block(block_bands[k], bounds, band_acc, weight=block_weights[k])
-                self.__paste_block(block_weights[k], bounds, weight_acc)
-            # cv2.imshow(f"weight_acc{k}", weight_acc/np.max(weight_acc))
-            # cv2.imshow(f"band_acc{k}", band_acc / 255)
-            band_acc /= np.expand_dims(weight_acc, axis =-1)
+                self.__paste_block(block_bands, bounds, band_acc, weight=block_weights)
+                self.__paste_block(block_weights, bounds, weight_acc)
 
-            # cv2.imshow(f"norm_band_acc{k}", band_acc / 255)
+            band_acc /= np.expand_dims(weight_acc, axis =-1)
             full_acc += band_acc  
 
         self.composite_image = np.clip(full_acc, 0, 255).astype(np.uint8)
-
-        # for img, pose, bounds, mask in zip(self.imgs, self.poses, self.warped_bounds, influence_mask):
-        #     warped_img = self.__compute_warped_image(img, pose)
-        #     self.__compute_blend_bands(img, mask)
-        #     self.__paste_image(warped_img, bounds, mask)
         return self.composite_image 
 
-    def __compute_blend_bands(self, sigma: float=5, num_bands: int=3) -> tuple[list[np.ndarray], list[np.ndarray]]: 
-        # TODO: Convolutions are not calculated correctly (should switch to image coords to avoid errors)
-        # Compute requirements  
-        warp_imgs = [self.__compute_warped_image(img, pose) for img, pose in zip(self.imgs, self.poses)]  
-        influence_masks = self.__compute_influence_masks()         
+    def __compute_blend_bands(self, sigma: float=5, num_bands: int=3) -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]]: 
+        inf_masks = self.__compute_influence_masks()         
 
         # Storage for aggregate bands
-        all_bands = []
-        all_weights = []
+        all_bands = [[] for _ in range(num_bands)]
+        all_weights = [[] for _ in range(num_bands)]
 
         # Loop through images and calculate bands 
-        for warp_img, inf_mask in zip(warp_imgs, influence_masks):  
+        for img, inf_mask, pose in zip(self.imgs, inf_masks, self.poses):  
             # Preallocate for speed
-            I = np.zeros((num_bands, *warp_img.shape), dtype=np.float32) 
-            B = np.zeros((num_bands, *warp_img.shape), dtype=np.float32)
+            I = np.zeros((num_bands, *img.shape), dtype=np.float32) 
+            B = np.zeros((num_bands, *img.shape), dtype=np.float32)
             W = np.zeros((num_bands, *inf_mask.shape), dtype=np.float32)
 
             # Storage for blurred images and bands 
             # I[0] - warped_img; B[k] = I[k] - I[K+1]
-            I[0] = warp_img.astype(np.float32)
+            I[0] = img.astype(np.float32)
 
             # Compute image high-pass bands
             # B[k] includes wavelengths in range [0, k*sigma]
@@ -171,21 +160,23 @@ class Composer:
                 # Compute W[k+1] as W[k] * g_sigma_k 
                 W[k+1] = blur_image(W[k], sigma * np.sqrt(2*(k+1) + 1))
 
-            # Save 
-            all_bands.append(B)
-            all_weights.append(W)
+            # Warp bands and weights 
+            for k in range(num_bands):
+                all_bands[k].append(self.__warp_image(B[k], pose, inter=cv2.INTER_CUBIC))
+                # Use cheaper lerp for masks
+                all_weights[k].append(self.__warp_image(W[k], pose, inter=cv2.INTER_LINEAR))
 
         return all_bands, all_weights 
  
     def __compute_influence_masks(self) -> list[np.ndarray]:
-        influence_masks = []
+        inf_masks = [] # list of influence masks 
         warped_weights = self.__compute_warped_weights() 
 
         # Compute influence masks for all images:
         num_imgs = len(self.imgs)
         for i in range(num_imgs):
             # Set initial mask 1 where warped weight > 0 
-            mask = warped_weights[i] > 0
+            inf_mask = warped_weights[i] > 0
 
             # Update influence mask
             for j in range(num_imgs):
@@ -203,10 +194,14 @@ class Composer:
                 # Update mask in region 
                 weight_j = warped_weights[j][pyj:pyj+h, pxj:pxj+w]
                 weight_i = warped_weights[i][pyi:pyi+h, pxi:pxi+w]
-                mask[pyi:pyi+h, pxi:pxi+w] &= weight_i > weight_j # abuse of bitwise op?? 
-            influence_masks.append(mask.astype(np.float32))
+                inf_mask[pyi:pyi+h, pxi:pxi+w] &= weight_i > weight_j # abuse of bitwise op?? 
 
-        return influence_masks
+            # convert mask back from spherical to planar coordinates 
+            inf_mask = inf_mask.astype(np.float32) 
+            dst_size = get_width_height(self.imgs[i])
+            inf_mask = self.__unwarp_image(inf_mask, self.poses[i], dst_size, inter=cv2.INTER_NEAREST)  
+            inf_masks.append(inf_mask)
+        return inf_masks
 
     # TODO: allow scaling
     def __compute_warped_weights(self) -> list[np.ndarray]: 
@@ -222,15 +217,23 @@ class Composer:
             weights_xy = np.outer(weights_y, weights_x)
 
             # Convert weight to spherical coords 
-            warped_weights.append(self.__compute_warped_image(weights_xy, pose)) 
+            warped_weights.append(self.__warp_image(weights_xy, pose)) 
         return warped_weights
 
  
-    def __compute_warped_image(self, img: np.ndarray, pose: CameraPose) -> np.ndarray:
+    def __warp_image(self, img: np.ndarray, pose: CameraPose,
+                               inter=cv2.INTER_LINEAR, border=cv2.BORDER_CONSTANT) -> np.ndarray:
         invR = pose.get_inv_r_mat().astype(np.float32)
         K = pose.get_k_mat().astype(np.float32)
-        _, warped_img = self.warper.warp(img, K, invR, cv2.INTER_CUBIC, cv2.BORDER_CONSTANT)
+        _, warped_img = self.warper.warp(img, K, invR, inter, border)
         return warped_img
+    
+    def __unwarp_image(self, img: np.ndarray, pose: CameraPose, dst_size: tuple[int, int], 
+                                 inter=cv2.INTER_LINEAR, border=cv2.BORDER_CONSTANT) -> np.ndarray: 
+        invR = pose.get_inv_r_mat().astype(np.float32)
+        K = pose.get_k_mat().astype(np.float32)
+        return self.warper.warpBackward(img, K, invR, inter, border, dst_size)
+    
 
     # TODO: rework
     def __paste_block(self, img_block: np.ndarray, bounds: ImageBounds, out_img: np.ndarray, weight: np.ndarray|None = None): 

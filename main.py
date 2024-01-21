@@ -19,7 +19,7 @@ def downscale_image(img: np.ndarray, target_dim: int)-> np.ndarray:
         return img
     else: 
         dim = (int(w * s), int(h * s))
-        return cv2.resize(img, dim, interpolation=cv2.INTER_CUBIC) 
+        return cv2.resize(img, dim, interpolation=cv2.INTER_AREA) 
 
 
 def pose_to_RK(w: float, h: float, pose: CameraPose): 
