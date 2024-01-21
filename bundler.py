@@ -94,11 +94,12 @@ class Bundler:
             x0 = self.__pack_poses() 
 
             # Perform optimization
-            scale = np.full(x0.shape, np.pi/16)
-            scale[::4] = np.mean(x0[::4])/10 
+            # scale = np.full(x0.shape, np.pi/16)
+            # scale[::4] = np.mean(x0[::4])/10 
             res = least_squares(self.__eval_reprojection_error, x0, 
                                 jac = self.__eval_jacobian,  
-                                x_scale = scale,
+                                # x_scale = scale,
+                                x_scale ='jac',
                                 method='lm', verbose=2)
             # Unpack result and store data in pose_graph_nodes
             if DEBUG_ENABLED(): print(res)
@@ -108,7 +109,7 @@ class Bundler:
         x0 = self.__pack_poses() 
         res = least_squares(self.__eval_reprojection_error, x0, 
                             jac = self.__eval_jacobian, 
-                            method='trf', x_scale ='jac', f_scale=2, 
+                            method='trf', x_scale ='jac', f_scale=3, 
                             loss='huber', verbose=2)
         self.__unpack_poses(res.x)
 
