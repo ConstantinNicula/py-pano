@@ -17,7 +17,7 @@ def scale_image(img: np.ndarray, max_target_dim: int) -> tuple[np.ndarray, float
     return (cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC), s) 
 
 def blur_image(img: np.ndarray, sigma: float) -> np.ndarray:
-    return cv2.GaussianBlur(img, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    return cv2.GaussianBlur(img, (0, 0), sigmaX=sigma, sigmaY=sigma, borderType=cv2.BORDER_DEFAULT)
 
 def image_center(img: np.ndarray, scale: float = 1) -> np.ndarray:
     h, w, _ = img.shape
