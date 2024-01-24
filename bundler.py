@@ -71,7 +71,7 @@ class Bundler:
             self.img_matches[(img1_id, img2_id)] = mdata 
 
         
-    def optimize(self, st_image_id: int = 0):
+    def optimize(self, st_image_id: int = 0) -> list[CameraPose]:
         # Cleanup internal vars
         self.active_node_ids = []
         self.active_edges = []
@@ -127,6 +127,8 @@ class Bundler:
         print(self.active_node_ids) 
         for i, pose in enumerate(self.pose_graph_nodes):
             print(f"[{i}]: {pose}")
+
+        return self.pose_graph_nodes
 
     def __mark_active_node(self, id: int): 
         self.active_node_ids.append(id)

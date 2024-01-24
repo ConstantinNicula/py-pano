@@ -66,6 +66,7 @@ class Composer:
         self.composite_image: np.ndarray = None 
         self.__compute_image_bounds() 
 
+    
     def __compute_scale(self) -> float: 
         cam_focal_lengths = [pose.f for pose in self.poses] 
         return np.median(cam_focal_lengths)

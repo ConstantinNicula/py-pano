@@ -2,7 +2,7 @@ import numpy as np
 import cv2 
 
 
-def scale_image(img: np.ndarray, max_target_dim: int) -> tuple[np.ndarray, float]:
+def scale_image(img: np.ndarray, max_target_dim: int, inter=cv2.INTER_CUBIC) -> tuple[np.ndarray, float]:
     # Compute target scale
     h, w, _ = img.shape
     
@@ -14,7 +14,7 @@ def scale_image(img: np.ndarray, max_target_dim: int) -> tuple[np.ndarray, float
     new_h = int(round(s * h))    
     new_w = int(round(s * w))    
 
-    return (cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC), s) 
+    return (cv2.resize(img, (new_w, new_h), interpolation=inter), s) 
 
 def blur_image(img: np.ndarray, sigma: float) -> np.ndarray:
     return cv2.GaussianBlur(img, (0, 0), sigmaX=sigma, sigmaY=sigma, borderType=cv2.BORDER_DEFAULT)

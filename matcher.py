@@ -25,8 +25,8 @@ class MatchData:
 
 class Matcher: 
     def __init__(self, kpts_per_img:int = 1250, reproj_err:float=3): 
-        # # Params described https://docs.opencv.org/3.4/db/d95/classcv_1_1ORB.html
-        self.kp_detector = cv2.SIFT.create(nfeatures=kpts_per_img)
+        self.kp_detector = cv2.SIFT.create(nfeatures=kpts_per_img, 
+                                           contrastThreshold=0.09)
         self.kp_matcher = cv2.BFMatcher.create(normType=cv2.NORM_L2)
         self.repoj_err = reproj_err
         
