@@ -2,12 +2,14 @@ import argparse
 import loader
 import time 
 import cv2
+import os
 
 from matcher import Matcher
 from bundler import Bundler, CameraPose
 from homography import *
 from pose_debug import PoseVisualizer
 from composer import Composer
+from utils import *
 
 import img_uitls
 import so3
@@ -33,7 +35,7 @@ def pose_to_RK(w: float, h: float, pose: CameraPose):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("img_src_folder", help="Path to the folder containing input images")
-    parser.add_argument("out_folder", help="Path where result will be stored")
+    # parser.add_argument("out_folder", help="Path where result will be stored")
     args = parser.parse_args()
 
     imgs, imgs_exif = loader.load_batch(args.img_src_folder)
@@ -61,10 +63,15 @@ def main():
 
     composer = Composer(mid_imgs, bundler.pose_graph_nodes)    
     panorama = composer.compose()
-
-    cv2.imshow(f"panorama", panorama)
-
-    PoseVisualizer.display(bundler.pose_graph_nodes, mid_imgs, [])
+    
+    dest_folder = f"{args.img_src_folder}/out"
+    if not os.path.exists(dest_folder): os.mkdir(dest_folder)
+    cv2.imwrite(f"{dest_folder}/out.png", panorama)
+    
+    # show final result if requested
+    if DEBUG_ENABLED():
+        cv2.imshow(f"panorama", panorama)
+        PoseVisualizer.display(bundler.pose_graph_nodes, mid_imgs, [])
 
 if __name__ == "__main__":
     main()

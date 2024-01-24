@@ -4,6 +4,7 @@ import so3
 
 from bundler import CameraPose
 from img_uitls import *
+from utils import *
 
 class ImageBounds: 
     """ 
@@ -108,12 +109,13 @@ class Composer:
         img_shape = self.composite_image.shape 
         full_acc = np.zeros(img_shape, dtype=np.float32)
 
-        for k in range(num_bands): 
+        for k in range(num_bands):
             # Create accumulator images for intermediates 
             band_acc = np.zeros(img_shape, dtype=np.float32)
             weight_acc = np.full((img_shape[0], img_shape[1]), 1e-6, dtype=np.float32)  
 
-            for bounds, block_bands, block_weights in zip(self.warped_bounds, all_block_bands[k], all_block_weights[k]):
+            for i, bounds, block_bands, block_weights in zip(range(len(self.warped_bounds)), self.warped_bounds, all_block_bands[k], all_block_weights[k]):
+                if DEBUG_ENABLED(): print(f"Compositing band {k} for image {i}")
                 # write image data
                 self.__paste_block(block_bands, bounds, band_acc, weight=block_weights)
                 self.__paste_block(block_weights, bounds, weight_acc)
@@ -132,7 +134,9 @@ class Composer:
         all_weights = [[] for _ in range(num_bands)]
 
         # Loop through images and calculate bands 
-        for img, inf_mask, pose in zip(self.imgs, inf_masks, self.poses):  
+        for i, img, inf_mask, pose in zip(range(len(self.imgs)), self.imgs, inf_masks, self.poses):  
+            if DEBUG_ENABLED(): print(f"Computing blend bands for image {i}")
+            
             # Preallocate for speed
             I = np.zeros((num_bands, *img.shape), dtype=np.float32) 
             B = np.zeros((num_bands, *img.shape), dtype=np.float32)
