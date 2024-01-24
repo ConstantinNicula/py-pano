@@ -124,7 +124,7 @@ class Composer:
         self.composite_image = np.clip(full_acc, 0, 255).astype(np.uint8)
         return self.composite_image 
 
-    def __compute_blend_bands(self, sigma: float=5, num_bands: int=3) -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]]: 
+    def __compute_blend_bands(self, sigma: float=5, num_bands: int=3, border_pix:int=2) -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]]: 
         inf_masks = self.__compute_influence_masks()         
 
         # Storage for aggregate bands
@@ -160,12 +160,21 @@ class Composer:
                 # Compute W[k+1] as W[k] * g_sigma_k 
                 W[k+1] = blur_image(W[k], sigma * np.sqrt(2*(k+1) + 1))
 
-            # Warp bands and weights 
+            # Warp bands and weights (convert to spherical coords)
+            # Create a crop mask (fix for black streaks)
+            crop_mask = np.zeros((img.shape[0], img.shape[1]), dtype=np.float32)
+            crop_mask[border_pix:-border_pix, border_pix:-border_pix] = 1.0
+            # Convert crop mask to spherical coords
+            crop_mask = self.__warp_image(crop_mask, pose, inter=cv2.INTER_NEAREST, border=cv2.BORDER_CONSTANT)
             for k in range(num_bands):
-                all_bands[k].append(self.__warp_image(B[k], pose, inter=cv2.INTER_CUBIC))
-                # Use cheaper lerp for masks
-                all_weights[k].append(self.__warp_image(W[k], pose, inter=cv2.INTER_LINEAR))
+                B_sph = self.__warp_image(B[k], pose, inter=cv2.INTER_CUBIC)
+                B_sph *= np.expand_dims(crop_mask, axis=-1) # apply mask
+                all_bands[k].append(B_sph)
 
+                # Use cheaper lerp for masks
+                W_sph = self.__warp_image(W[k], pose, inter=cv2.INTER_LINEAR)
+                W_sph *= crop_mask # apply mask  
+                all_weights[k].append(W_sph)
         return all_bands, all_weights 
  
     def __compute_influence_masks(self) -> list[np.ndarray]:
