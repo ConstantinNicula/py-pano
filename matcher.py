@@ -24,8 +24,9 @@ class MatchData:
     H: np.ndarray
 
 class Matcher: 
-    def __init__(self, kpts_per_img:int = 1250, reproj_err:float=3): 
-        self.kp_detector = cv2.SIFT.create(nfeatures=kpts_per_img, 
+    def __init__(self, kpts_per_img:int = 1500, reproj_err:float=3): 
+        self.kp_detector = cv2.SIFT.create(nfeatures=kpts_per_img,
+                                           nOctaveLayers=3,
                                            contrastThreshold=0.09)
         self.kp_matcher = cv2.BFMatcher.create(normType=cv2.NORM_L2)
         self.repoj_err = reproj_err
@@ -83,7 +84,7 @@ class Matcher:
         # desc1 - query image, desc2 - train image
         kpt_matches = self.kp_matcher.knnMatch(desc1, desc2, k=2)
         
-        train_to_query: dict[int, tuple] = {i:[] for i in range(len(desc2)) }
+        train_to_query: dict[int, list] = {i:[] for i in range(len(desc2)) }
         for m in kpt_matches:
             if len(m) == 2 and m[0].distance < 0.8 * m[1].distance:
                 train_to_query[m[0].trainIdx].append((m[0].queryIdx, m[0].distance))
