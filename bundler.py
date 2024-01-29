@@ -274,6 +274,7 @@ class Bundler:
     def __remove_camera_rotations(self):
         # https://math.stackexchange.com/questions/180418/calculate-rotation-matrix-to-align-vector-a-to-vector-b-in-3d
 
+        # 1) Align horizon 
         # Compute up vector as the null vector of 
         # the covariance matrix of camera X vectors
         X = np.zeros((3, 3))
@@ -289,10 +290,9 @@ class Bundler:
         u = Vh[-1, :]
 
         # Make sure u is pointing in the direction of camera y axis 
-        ref_i = self.active_node_ids[0]
-        ref_y = so3.exp(self.pose_graph_nodes[ref_i].rot)[1]
-        if np.dot(u, ref_y) < 0:
-            u *= -1
+        n_id = self.active_node_ids[0]
+        ref_y = so3.exp(self.pose_graph_nodes[n_id].rot)[1]
+        if np.dot(u, ref_y) < 0: u *= -1
 
         # Compute alignment rotations 
         w = np.cross(u, np.array([0, 1, 0]))
@@ -307,6 +307,24 @@ class Bundler:
         for ni in self.active_node_ids:
             pose_i = self.pose_graph_nodes[ni]
             pose_i.rot = so3.log(so3.exp(pose_i.rot) @ R_align.T)
+
+        # 2) Remove unnecessary Y rotations
+        avg_angle = 0
+        for ni in self.active_node_ids:
+            # Extract z axis (last row of rotation matrix)
+            z_axis = so3.exp(self.pose_graph_nodes[ni].rot)[2]
+            # Compute angle of z_axis projection on global Z, X axes 
+            ang = np.arctan2(z_axis[2], z_axis[0]) - np.pi/2
+            avg_angle += ang
+
+        avg_angle /= len(self.active_node_ids)
+        R_align = so3.exp(avg_angle * np.array([0, 1, 0])) 
+
+        # Apply rotations to all nodes
+        for ni in self.active_node_ids: 
+            pose_i = self.pose_graph_nodes[ni]
+            pose_i.rot = so3.log(so3.exp(pose_i.rot) @ R_align.T) 
+
 
     def __pack_poses(self) -> np.ndarray: 
         dim =  4 * len(self.active_node_ids)
