@@ -19,7 +19,10 @@ The following steps are required to setup and run the demo:
 - `pip install -r requirements.txt` - install python dependencies 
 - `python main.py <path_to_input>` - create panorama for images in provided folder, output is stored in <path_to_input>/out/out.png
 
-## Examples 
+## Examples
+![](https://github.com/ConstantinNicula/py-pano/blob/main/input_imgs/ntulib/out/out.png)
+![](https://github.com/ConstantinNicula/py-pano/blob/main/input_imgs/hanafish/out/out.png)
+![](https://github.com/ConstantinNicula/py-pano/blob/main/input_imgs/apron/out/out.png)
 Test images taken from this website: http://www.photofit4panorama.com/gallery.html
 
 
