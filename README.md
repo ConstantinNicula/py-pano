@@ -15,7 +15,7 @@ The stitching pipeline's implementation draws heavily from the work of G. Lowe a
 The code in this repo requires Python >=3.9 and relies on a series of standard packages. To simplify installation a `requirements.txt` is provided in the root directory of the repo.  
 
 The following steps are required to setup and run the demo: 
-- setup conda / virtualenv with with Python >= 3.9 
+- setup conda / virtualenv with with Python >=3.9 
 - `pip install -r requirements.txt` - install python dependencies 
 - `python main.py <path_to_input>` - create panorama for images in provided folder, output is stored in <path_to_input>/out/out.png
 
